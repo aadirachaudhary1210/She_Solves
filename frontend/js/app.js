@@ -11,7 +11,121 @@ const state = {
   isProtectedUnlocked: false,
   unlockExpiry: null,
   pendingProtectedTab: null,
-  
+  token: sessionStorage.getItem("foodshield_token") || null,
+  isApiConnected: false,
+
+  // Challenge 2: DemandSense AI State
+  demandSense: {
+    activeScenario: 'scenario_a',
+    demandMultiplier: 1.0,
+    horizonDays: 7,
+    selectedDishId: null,
+    forecasts: [],
+    ingredientDemands: [],
+    stockoutRisks: [],
+    recommendations: [],
+    expiryRiskReports: [],
+    history: [],
+    methodology: null,
+    scenarioMetadata: {
+      title: "Scenario A: Baseline Normal Operations",
+      description: "Standard daily sales and replenishment cycles. All inventory buffers healthy and within parameters.",
+      impact: "Stockout Risk Scores: LOW (all < 30). No urgent purchase orders required."
+    },
+    isLoading: false,
+    selectedRiskDetail: null
+  },
+
+  // Challenge 2: Cold-Chain Storage & Telemetry State
+  storageUnits: [
+    {
+      id: 1,
+      restaurant_id: 1,
+      name: "Walk-in Dairy & Cold Chiller #1",
+      unit_type: "walk_in_chiller",
+      location_area: "Central Cold Storage Room",
+      min_temp: 0.5,
+      max_temp: 4.0,
+      target_temp: 2.5,
+      current_temp: 3.2,
+      current_humidity: 74.0,
+      status: "normal",
+      last_ping: "2026-10-09 10:45:00 UTC",
+      active_breaches_count: 0,
+      linked_batches_count: 2
+    },
+    {
+      id: 2,
+      restaurant_id: 1,
+      name: "Deep Meat & Poultry Freezer #1",
+      unit_type: "deep_freezer",
+      location_area: "Sub-Zero Storage Bay",
+      min_temp: -22.0,
+      max_temp: -18.0,
+      target_temp: -20.0,
+      current_temp: -19.4,
+      current_humidity: 58.0,
+      status: "normal",
+      last_ping: "2026-10-09 10:45:00 UTC",
+      active_breaches_count: 0,
+      linked_batches_count: 0
+    },
+    {
+      id: 3,
+      restaurant_id: 1,
+      name: "Line Prep Chilled Counter",
+      unit_type: "prep_refrigerator",
+      location_area: "Kitchen Hot-Line Section",
+      min_temp: 1.0,
+      max_temp: 5.0,
+      target_temp: 3.5,
+      current_temp: 4.8,
+      current_humidity: 68.0,
+      status: "warning",
+      last_ping: "2026-10-09 10:45:00 UTC",
+      active_breaches_count: 0,
+      linked_batches_count: 0
+    },
+    {
+      id: 4,
+      restaurant_id: 1,
+      name: "Salad & Dessert Display Counter",
+      unit_type: "display_counter",
+      location_area: "Dining Service Counter",
+      min_temp: 2.0,
+      max_temp: 6.0,
+      target_temp: 4.0,
+      current_temp: 7.8,
+      current_humidity: 62.0,
+      status: "critical_breach",
+      last_ping: "2026-10-09 10:45:00 UTC",
+      active_breaches_count: 1,
+      linked_batches_count: 0
+    }
+  ],
+  temperatureAlerts: [
+    {
+      id: 1,
+      unit_id: 4,
+      unit_name: "Salad & Dessert Display Counter",
+      restaurant_id: 1,
+      breach_temp: 7.8,
+      threshold_temp: 6.0,
+      severity: "critical",
+      escalation_level: 2,
+      status: "level_2_manager_escalated",
+      narrative: "Display counter exceeded safe limit (7.8°C > 6.0°C) for over 90 mins. Elevated to General Manager for immediate compressor service check.",
+      detected_at: "2026-10-09 08:45:00 UTC",
+      acknowledged_at: null,
+      acknowledged_by: null,
+      corrective_action_notes: null
+    }
+  ],
+  selectedTelemetryUnitId: 1,
+  telemetryHistory: {},
+  spoilagePredictions: [],
+  coldChainSubTab: 'overview',
+
   // Real-time Database
   restaurants: [
     {
@@ -413,7 +527,7 @@ const state = {
 document.addEventListener("DOMContentLoaded", () => {
   startClock();
   renderAlertsDropdown();
-  
+
   // Check if session stored or default to logged out
   const savedUser = sessionStorage.getItem("foodshield_user");
   if (savedUser) {
@@ -452,7 +566,7 @@ function switchLoginRole(role) {
   const btnOff = document.getElementById("roleBtnOfficer");
   const emailInput = document.getElementById("loginEmail");
   const passInput = document.getElementById("loginPassword");
-  
+
   if (role === 'restaurant') {
     btnRest.className = "py-2.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 bg-white text-teal-800 shadow-sm border border-slate-200";
     btnOff.className = "py-2.5 px-3 rounded-lg text-xs font-medium text-slate-600 transition-all flex items-center justify-center gap-1.5 hover:text-slate-900";
@@ -484,8 +598,35 @@ function handleLoginSubmit(e) {
     Authenticating Secure Session...
   `;
 
-  setTimeout(() => {
-    // Validate credentials safely without disclosing username existence
+  setTimeout(async () => {
+    // Attempt Live API login first
+    try {
+      const authPayload = await apiCall("/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email, password, role: state.activeRole })
+      });
+      if (authPayload && authPayload.access_token) {
+        state.token = authPayload.access_token;
+        sessionStorage.setItem("foodshield_token", authPayload.access_token);
+        state.currentUser = {
+          email: email,
+          name: authPayload.full_name,
+          role: authPayload.role,
+          title: authPayload.role === 'restaurant' ? "The Royal Spice Kitchen" : "Senior Food Safety Officer (FSO-DL-4029)",
+          restaurantId: authPayload.restaurant_id,
+          officerId: authPayload.officer_id
+        };
+        sessionStorage.setItem("foodshield_user", JSON.stringify(state.currentUser));
+        logAuditEvent("LOGIN_SUCCESS", `${authPayload.full_name} authenticated with live JWT token.`);
+        showAppShell();
+        showToast("Connected to AnnaKavach / FoodShield Live Grid", "success");
+        return;
+      }
+    } catch(err) {
+      console.log("Live API login unreached or failed, evaluating demo credentials:", err.message);
+    }
+
+    // Validate credentials safely with local demo fallback
     if (state.activeRole === 'restaurant' && email === 'restaurant@foodshield.com' && password === 'Password123!') {
       state.currentUser = {
         email: email,
@@ -494,9 +635,9 @@ function handleLoginSubmit(e) {
         title: "The Royal Spice Kitchen"
       };
       sessionStorage.setItem("foodshield_user", JSON.stringify(state.currentUser));
-      logAuditEvent("LOGIN_SUCCESS", "User authenticated into Restaurant Portal");
+      logAuditEvent("LOGIN_SUCCESS", "User authenticated into Restaurant Portal (Demo Mode)");
       showAppShell();
-      showToast("Welcome to FoodShield Restaurant Portal", "success");
+      showToast("Welcome to AnnaKavach / FoodShield Portal", "success");
     } else if (state.activeRole === 'officer' && email === 'officer@foodshield.gov' && password === 'OfficerSecure2026!') {
       state.currentUser = {
         email: email,
@@ -535,13 +676,13 @@ function showAuthView() {
 function showAppShell() {
   document.getElementById("authView").classList.add("hidden");
   document.getElementById("appShell").classList.remove("hidden");
-  
+
   // Update header and sidebar identity
   const user = state.currentUser;
   document.getElementById("userFullName").textContent = user.name;
   document.getElementById("userEmailTag").textContent = user.email;
   document.getElementById("sidebarRoleLabel").textContent = user.role === 'restaurant' ? 'Restaurant Portal' : 'Govt Food Safety Officer';
-  
+
   // Set initials avatar
   const initials = user.name.split(" ").map(n => n[0]).join("").substring(0, 2);
   document.getElementById("userAvatarInitials").textContent = initials;
@@ -585,7 +726,11 @@ function renderNavigation() {
   const role = state.currentUser.role;
 
   const restaurantLinks = [
-    { id: 'dashboard', label: 'Dashboard & Scores', icon: '📊', isProtected: false },
+    { id: 'dashboard', label: 'Overview & Scores', icon: '📊', isProtected: false },
+    { id: 'demandsense', label: 'DemandSense AI', icon: '📈', isProtected: false, badge: 'AI' },
+    { id: 'temperature', label: 'Cold Chain Intelligence', icon: '❄️', isProtected: false, badge: '!' },
+    { id: 'temperature_alerts', label: 'Alerts & Escalations', icon: '🚨', isProtected: false },
+    { id: 'temperature_compliance', label: 'Compliance & Spoilage', icon: '🛡️', isProtected: false },
     { id: 'menu', label: 'Menu & Traceability', icon: '🍲', isProtected: false },
     { id: 'stock', label: 'Stock & Procurement', icon: '📦', isProtected: false },
     { id: 'hygiene', label: 'Hygiene & Cleaning', icon: '✨', isProtected: false },
@@ -598,7 +743,9 @@ function renderNavigation() {
 
   const officerLinks = [
     { id: 'officer_dashboard', label: 'Officer Overview', icon: '🏛️', isProtected: false },
+    { id: 'demandsense', label: 'DemandSense AI Audit', icon: '📈', isProtected: false, badge: 'AI' },
     { id: 'officer_restaurants', label: 'Restaurants Directory', icon: '🏢', isProtected: false },
+    { id: 'officer_temperature', label: 'Cold-Chain Excursions', icon: '🌡️', isProtected: false, badge: '!' },
     { id: 'officer_evidence', label: 'Evidence Review Queue', icon: '🔍', isProtected: false, badge: '1' },
     { id: 'officer_inspections', label: 'Inspections & Audits', icon: '📝', isProtected: false },
     { id: 'officer_corrective', label: 'Corrective Directives', icon: '⚖️', isProtected: false },
@@ -609,7 +756,7 @@ function renderNavigation() {
 
   links.forEach(link => {
     const btn = document.createElement("button");
-    const isActive = state.activeTab === link.id;
+    const isActive = state.activeTab === link.id || (state.activeTab === 'temperature' && (link.id === 'temperature' || link.id === `temperature_${state.coldChainSubTab}`));
     btn.className = `w-full text-left py-2.5 px-3 rounded-xl flex items-center justify-between transition group ${
       isActive ? 'bg-teal-600 text-white font-bold shadow-sm' : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
     }`;
@@ -639,6 +786,23 @@ function handleNavClick(link) {
 }
 
 function navigateTo(tabId) {
+  if (tabId === 'temperature_alerts') {
+    state.activeTab = 'temperature';
+    state.coldChainSubTab = 'alerts';
+    document.getElementById("pageTitle").textContent = "AnnaKavach — Alerts & Escalations";
+    renderColdChainDashboard(document.getElementById("mainViewContent"));
+    renderNavigation();
+    return;
+  }
+  if (tabId === 'temperature_compliance') {
+    state.activeTab = 'temperature';
+    state.coldChainSubTab = 'compliance';
+    document.getElementById("pageTitle").textContent = "AnnaKavach — Compliance & Spoilage";
+    renderColdChainDashboard(document.getElementById("mainViewContent"));
+    renderNavigation();
+    return;
+  }
+
   state.activeTab = tabId;
   renderNavigation();
 
@@ -649,6 +813,14 @@ function navigateTo(tabId) {
     case 'dashboard':
       titleEl.textContent = "Restaurant Compliance Dashboard";
       renderRestaurantDashboard(contentEl);
+      break;
+    case 'demandsense':
+      titleEl.textContent = "AnnaKavach — DemandSense AI Replenishment Engine";
+      renderDemandSenseDashboard(contentEl);
+      break;
+    case 'temperature':
+      titleEl.textContent = "AnnaKavach — Cold Chain Intelligence";
+      renderColdChainDashboard(contentEl);
       break;
     case 'menu':
       titleEl.textContent = "Menu Catalog & Ingredient Traceability Provenance";
@@ -690,6 +862,10 @@ function navigateTo(tabId) {
       titleEl.textContent = "Licensed Establishments Inspection Registry";
       renderOfficerRestaurants(contentEl);
       break;
+    case 'officer_temperature':
+      titleEl.textContent = "AnnaKavach — Cold-Chain Statutory Excursions";
+      renderOfficerColdChainExcursions(contentEl);
+      break;
     case 'officer_evidence':
       titleEl.textContent = "Automated & Human Evidence Review Queue";
       renderOfficerEvidenceQueue(contentEl);
@@ -716,7 +892,7 @@ function openSecurityPinModal(moduleName) {
   const purposeText = document.getElementById("pinModalPurposeText");
   const input = document.getElementById("securityPinInput");
   const err = document.getElementById("pinErrorMsg");
-  
+
   purposeText.textContent = `Secondary authentication required to access confidential ${moduleName}. Enter 4-digit PIN.`;
   input.value = "";
   err.classList.add("hidden");
@@ -880,7 +1056,7 @@ function renderRestaurantDashboard(container) {
   container.innerHTML = `
     <!-- Top KPI Grid -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-      
+
       <!-- Card 1: FoodShield Score -->
       <div class="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm relative overflow-hidden">
         <div class="flex items-center justify-between text-xs font-semibold text-slate-500 mb-2">
@@ -946,7 +1122,10 @@ function renderRestaurantDashboard(container) {
         <div class="text-xs text-slate-400">Log statutory compliance updates directly to immutable store</div>
       </div>
       <div class="flex flex-wrap gap-2">
-        <button onclick="openAddStockModal()" class="py-2 px-3 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-sm">
+        <button onclick="navigateTo('temperature')" class="py-2 px-3 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-sm border border-teal-400/30">
+          <span>❄️ Cold Chain Intelligence</span>
+        </button>
+        <button onclick="openAddStockModal()" class="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition flex items-center gap-1.5 border border-slate-700">
           <span>+ Add Stock Batch</span>
         </button>
         <button onclick="navigateTo('hygiene')" class="py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition flex items-center gap-1.5 border border-slate-700">
@@ -963,7 +1142,7 @@ function renderRestaurantDashboard(container) {
 
     <!-- Middle Section: Breakdown & Traceability Preview -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      
+
       <!-- Column 1 & 2: Compliance Category Breakdown -->
       <div class="lg:col-span-2 bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
         <div class="flex items-center justify-between mb-4 pb-2 border-b border-slate-100">
@@ -1050,7 +1229,7 @@ function renderRestaurantDashboard(container) {
             <h3 class="font-bold text-slate-900 text-sm">Establishment Profile</h3>
             <span class="text-[10px] bg-slate-100 font-bold text-slate-700 px-2 py-0.5 rounded-md">${rest.riskLevel}</span>
           </div>
-          
+
           <div class="space-y-2.5 text-xs">
             <div>
               <span class="text-slate-400 block text-[10px] uppercase">Establishment Name</span>
@@ -1115,11 +1294,11 @@ function renderMenuManagement(container) {
                 ₹${dish.price}
               </div>
             </div>
-            
+
             <div class="p-5">
               <h4 class="text-base font-bold text-slate-900">${dish.name}</h4>
               <p class="text-xs text-slate-500 mt-1 line-clamp-2">${dish.description}</p>
-              
+
               <div class="mt-3 flex items-center gap-1.5 text-xs text-amber-700 bg-amber-50 px-2.5 py-1 rounded-lg border border-amber-200">
                 <span class="font-bold">Declared Allergens:</span>
                 <span>${dish.allergens}</span>
@@ -1175,7 +1354,7 @@ function viewTraceabilityGraph(dishId) {
   const modalContent = document.getElementById("actionModalContent");
 
   modalTitle.textContent = `Ingredient Provenance Flow: ${dish.name}`;
-  
+
   modalContent.innerHTML = `
     <div class="space-y-4">
       <div class="p-3 bg-teal-50 border border-teal-200 rounded-xl text-xs text-teal-900">
@@ -1183,7 +1362,7 @@ function viewTraceabilityGraph(dishId) {
       </div>
 
       <div class="relative pl-6 space-y-6 before:content-[''] before:absolute before:left-2 before:top-2 before:bottom-2 before:w-0.5 before:bg-teal-300">
-        
+
         <!-- Step 1: Dish -->
         <div class="relative">
           <div class="absolute -left-6 top-1 w-4 h-4 rounded-full bg-teal-600 ring-4 ring-teal-100"></div>
@@ -1396,7 +1575,7 @@ function renderStockManagement(container) {
                       <div class="text-right text-xs">
                         <div class="font-bold text-slate-800">${batch.qty} ${batch.unit} @ ₹${batch.price}/${batch.unit}</div>
                       </div>
-                      
+
                       <!-- Evidence Thumbnail -->
                       <button onclick="previewEvidenceModal(${batch.id})" class="flex items-center gap-1.5 py-1.5 px-2.5 rounded-lg bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 text-xs font-semibold transition" title="Inspect Automated Evidence Pipeline">
                         <svg class="w-4 h-4 text-teal-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"/></svg>
@@ -1485,9 +1664,9 @@ function openAddStockModal() {
       <div class="bg-teal-50/70 p-4 rounded-xl border border-teal-200">
         <label class="block font-bold text-teal-950 mb-1">Photographic Evidence & Package Label</label>
         <p class="text-[11px] text-teal-800 mb-2">Automated pipeline verifies EXIF metadata, timestamp freshness, and duplicate image signatures.</p>
-        
+
         <input type="file" id="newStockFile" accept="image/*" class="w-full text-xs text-slate-500 file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-teal-600 file:text-white hover:file:bg-teal-700 cursor-pointer">
-        
+
         <div class="mt-2 text-[10px] text-slate-500 flex items-center gap-2">
           <span>Supported: JPEG, PNG, WebP (Max 10MB)</span>
           <span>&bull;</span>
@@ -1594,7 +1773,7 @@ function previewEvidenceModal(batchId) {
           </div>
 
           <div class="text-2xl font-black text-slate-800">${ev.confidence}% <span class="text-xs font-normal text-slate-500">Confidence</span></div>
-          
+
           <div class="space-y-1.5 pt-2 border-t border-slate-200">
             <div>
               <span class="text-[10px] text-slate-400 block">Device Signature:</span>
@@ -1680,7 +1859,7 @@ function renderHygieneManagement(container) {
               </div>
               <span class="font-mono text-teal-800 bg-teal-50 px-2 py-0.5 rounded border border-teal-200 font-bold">${c.upiRef}</span>
             </div>
-            
+
             <div class="grid grid-cols-1 md:grid-cols-3 gap-2 py-2 border-y border-slate-200/60 text-slate-600">
               <div><strong>Service:</strong> ${c.service}</div>
               <div><strong>Service Date:</strong> ${c.date}</div>
@@ -1813,7 +1992,7 @@ function handlePhotoLogSubmit(e, areaId, taskId) {
   e.preventDefault();
   const area = state.cleaningAreas.find(a => a.id === areaId);
   const task = area.tasks.find(t => t.id === taskId);
-  
+
   task.status = "completed";
   task.hasPhoto = true;
   task.time = "Just now (Verified)";
@@ -2682,7 +2861,7 @@ function renderOfficerDashboard(container) {
 
     <!-- Quick Officer Navigation Grid -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      
+
       <!-- Column 1 & 2: Quick Establishments Inspection Directory -->
       <div class="lg:col-span-2 bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
         <div class="flex items-center justify-between pb-3 mb-3 border-b border-slate-100">
@@ -3201,9 +3380,9 @@ function logAuditEvent(action, details) {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, '0');
   const timestamp = `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  
+
   const userStr = state.currentUser ? `${state.currentUser.name} (${state.currentUser.role.toUpperCase()})` : "System";
-  
+
   state.auditLogs.unshift({
     timestamp,
     user: userStr,
@@ -3302,4 +3481,2274 @@ function showToast(message, type = "success") {
   setTimeout(() => {
     toast.classList.add("translate-y-20", "opacity-0");
   }, 3200);
+}
+
+// =============================================================
+// CHALLENGE 2: ANNAKAVACH — COLD CHAIN INTELLIGENCE MODULE
+// Real-time FSSAI Telemetry, Predictive Spoilage & 3-Tier Escalation
+// =============================================================
+
+const API_BASE_URL = "http://127.0.0.1:8000";
+
+async function apiCall(endpoint, options = {}) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4000);
+
+  const token = state.token || sessionStorage.getItem("foodshield_token");
+  const headers = {
+    "Content-Type": "application/json",
+    ...(options.headers || {})
+  };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
+  try {
+    const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      headers,
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+    state.isApiConnected = true;
+    updateApiStatusBadge(true);
+
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(errData.detail || `HTTP ${res.status}`);
+    }
+    return await res.json();
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError' || err.message.includes('fetch') || err.message.includes('NetworkError') || err.message.includes('Failed to fetch')) {
+      state.isApiConnected = false;
+      updateApiStatusBadge(false);
+    }
+    throw err;
+  }
+}
+
+function updateApiStatusBadge(isOnline) {
+  const badge = document.getElementById("apiStatusBadge");
+  const demoBadge = document.getElementById("demoModeBadge");
+  if (!badge) return;
+
+  if (isOnline) {
+    badge.className = "hidden lg:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200";
+    badge.innerHTML = `<span class="pulse-online"></span><span>Live API: 8000</span>`;
+    if (demoBadge) demoBadge.classList.add("hidden");
+  } else {
+    badge.className = "hidden lg:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600 border border-slate-200";
+    badge.innerHTML = `<span class="w-2 h-2 rounded-full bg-slate-400"></span><span>API Offline (Demo Mode)</span>`;
+    if (demoBadge) demoBadge.classList.remove("hidden");
+  }
+}
+
+// Data synchronization with backend
+async function syncColdChainData() {
+  try {
+    const units = await apiCall("/api/temperature/units");
+    if (Array.isArray(units) && units.length > 0) {
+      state.storageUnits = units;
+      state.storageUnitsFromApi = true;
+    }
+  } catch (e) {
+    state.storageUnitsFromApi = false;
+  }
+
+  try {
+    const alerts = await apiCall("/api/temperature/alerts");
+    if (Array.isArray(alerts)) {
+      state.temperatureAlerts = alerts;
+      state.alertsFromApi = true;
+    }
+  } catch (e) {
+    state.alertsFromApi = false;
+  }
+
+  try {
+    const risk = await apiCall("/api/temperature/spoilage-risk");
+    if (Array.isArray(risk)) {
+      state.spoilagePredictions = risk;
+      state.spoilageFromApi = true;
+    }
+  } catch (e) {
+    state.spoilageFromApi = false;
+  }
+}
+
+// -------------------------------------------------------------
+// MAIN DASHBOARD VIEW: ANNAKAVACH COLD CHAIN INTELLIGENCE
+// -------------------------------------------------------------
+
+async function renderColdChainDashboard(container) {
+  // Sync live backend data in background
+  syncColdChainData().then(() => {
+    // Re-render subtab if still active
+    if (state.activeTab === 'temperature') {
+      updateColdChainContent(document.getElementById("coldChainDynamicArea"));
+    }
+  }).catch(() => {});
+
+  // Compute live KPI totals
+  const totalUnits = state.storageUnits.length;
+  const safeUnits = state.storageUnits.filter(u => u.status === 'normal').length;
+  const safePercent = totalUnits > 0 ? Math.round((safeUnits / totalUnits) * 100) : 100;
+  const activeAlerts = state.temperatureAlerts.filter(a => a.status !== 'resolved').length;
+  const complianceGrade = activeAlerts === 0 ? "High Adherence (100%)" : `${safePercent}% Thermal Compliance`;
+  const isAllSafe = activeAlerts === 0;
+
+  container.innerHTML = `
+    <!-- Top Brand & Header Section -->
+    <div class="bg-gradient-to-r from-slate-900 via-teal-950 to-slate-900 text-white rounded-2xl p-6 border border-slate-800 shadow-xl relative overflow-hidden">
+      <div class="relative z-10 flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div class="flex items-center gap-2 mb-1">
+            <span class="text-xl">❄️</span>
+            <span class="text-xs font-bold tracking-wider uppercase text-teal-400">AnnaKavach — Challenge 2</span>
+            <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${state.isApiConnected ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'demo-pill'}">
+              ${state.isApiConnected ? '⚡ Live REST API (8000)' : 'ℹ️ Demo Stream Mode'}
+            </span>
+          </div>
+          <h2 class="text-xl sm:text-2xl font-extrabold tracking-tight">Cold Chain Intelligence Dashboard</h2>
+          <p class="text-xs text-slate-300 mt-1 max-w-xl">
+            Continuous statutory FSSAI/HACCP thermal telemetry, predictive microbial shelf-life decay, and automated 3-tier escalation.
+          </p>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button onclick="refreshColdChainView()" class="py-2 px-3 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-200 text-xs font-semibold transition border border-slate-700 flex items-center gap-1.5 shadow-sm">
+            <svg class="w-3.5 h-3.5 text-teal-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            <span>Sync API</span>
+          </button>
+          <button onclick="openRegisterUnitModal()" class="py-2 px-3.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-teal-600/30">
+            <span>+ New Unit</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- KPI Summary Grid (4 Cards) -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+
+      <!-- Card 1: Total Monitored Units -->
+      <div class="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm relative overflow-hidden">
+        <div class="flex items-center justify-between text-xs font-semibold text-slate-500 mb-2">
+          <span>MONITORED UNITS</span>
+          ${state.storageUnitsFromApi ?
+            `<span class="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">● Live API Data</span>` :
+            `<span class="text-[10px] text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">ℹ️ Demo Fallback</span>`}
+        </div>
+        <div class="flex items-baseline gap-2">
+          <span class="text-3xl font-extrabold text-slate-900">${totalUnits}</span>
+          <span class="text-xs text-slate-500 font-medium">Chillers & Freezers</span>
+        </div>
+        <div class="mt-3 flex items-center gap-1.5 text-[11px] text-slate-500">
+          <span class="w-2 h-2 rounded-full bg-teal-500"></span>
+          <span>FSSAI Schedule IV Monitored</span>
+        </div>
+      </div>
+
+      <!-- Card 2: Safe Compliant Units -->
+      <div class="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm">
+        <div class="flex items-center justify-between text-xs font-semibold text-slate-500 mb-2">
+          <span>SAFE UNITS</span>
+          <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${safePercent >= 75 ? 'badge-compliant' : 'badge-danger'}">
+            ${safePercent}% Safe
+          </span>
+        </div>
+        <div class="text-3xl font-extrabold text-slate-900">${safeUnits} / ${totalUnits}</div>
+        <div class="w-full bg-slate-100 h-1.5 rounded-full mt-3 overflow-hidden">
+          <div class="bg-emerald-500 h-1.5 rounded-full transition-all" style="width: ${safePercent}%"></div>
+        </div>
+        <div class="flex items-center justify-between mt-2">
+          <span class="text-[11px] text-slate-400">${totalUnits - safeUnits} unit(s) outside range</span>
+          ${state.storageUnitsFromApi ?
+            `<span class="text-[9px] text-emerald-600 font-semibold">Live Metric</span>` :
+            `<span class="text-[9px] text-amber-600 font-semibold">Demo Evaluation</span>`}
+        </div>
+      </div>
+
+      <!-- Card 3: Active Excursions / Alerts -->
+      <div class="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm">
+        <div class="flex items-center justify-between text-xs font-semibold text-slate-500 mb-2">
+          <span>ACTIVE ALERTS</span>
+          <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${activeAlerts > 0 ? 'badge-danger' : 'badge-compliant'}">
+            ${activeAlerts > 0 ? `${activeAlerts} Breach` : 'Zero Alerts'}
+          </span>
+        </div>
+        <div class="text-3xl font-extrabold ${activeAlerts > 0 ? 'text-rose-600' : 'text-slate-900'}">${activeAlerts}</div>
+        <div class="flex items-center gap-1.5 mt-3 text-xs ${activeAlerts > 0 ? 'text-rose-600' : 'text-emerald-600'} font-medium">
+          <span>${activeAlerts > 0 ? 'Requires immediate action' : 'All cold chains nominal'}</span>
+        </div>
+        <div class="flex items-center justify-between mt-1">
+          <span class="text-[11px] text-slate-400">3-Tier Escalation Active</span>
+          ${state.alertsFromApi ?
+            `<span class="text-[9px] text-emerald-600 font-semibold">Live Alert Store</span>` :
+            `<span class="text-[9px] text-amber-600 font-semibold">Demo Alert Store</span>`}
+        </div>
+      </div>
+
+      <!-- Card 4: HACCP Quality Status -->
+      <div class="bg-white rounded-2xl p-5 border border-slate-200 shadow-sm">
+        <div class="flex items-center justify-between text-xs font-semibold text-slate-500 mb-2">
+          <span>COMPLIANCE STATUS</span>
+          <span class="text-xs font-bold text-teal-700">FSSAI Sec 14</span>
+        </div>
+        <div class="text-lg font-bold text-slate-900 leading-snug mt-1">${complianceGrade}</div>
+        <div class="mt-3 flex items-center gap-1.5 text-xs text-slate-600">
+          <span class="${isAllSafe ? 'pulse-online' : 'pulse-breach'}"></span>
+          <span class="text-[11px]">${isAllSafe ? 'Compliant with Schedule IV' : 'Active penalty on score'}</span>
+        </div>
+        <div class="flex items-center justify-between mt-1">
+          <span class="text-[11px] text-slate-400">HACCP CCP-1 Cold Point</span>
+          <span class="text-[9px] text-teal-700 font-semibold">Statutory Standard</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Navigation Pills Container -->
+    <div class="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-2">
+      <button onclick="switchColdChainSubTab('overview')" class="py-2 px-3.5 rounded-xl text-xs font-bold transition ${state.coldChainSubTab === 'overview' ? 'bg-teal-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}">
+        📊 Overview
+      </button>
+      <button onclick="switchColdChainSubTab('monitoring')" class="py-2 px-3.5 rounded-xl text-xs font-bold transition ${state.coldChainSubTab === 'monitoring' ? 'bg-teal-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}">
+        🌡️ Temperature Monitoring
+      </button>
+      <button onclick="switchColdChainSubTab('history')" class="py-2 px-3.5 rounded-xl text-xs font-bold transition ${state.coldChainSubTab === 'history' ? 'bg-teal-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}">
+        📈 Telemetry Trends & History
+      </button>
+      <button onclick="switchColdChainSubTab('alerts')" class="py-2 px-3.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${state.coldChainSubTab === 'alerts' ? 'bg-teal-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}">
+        <span>🚨 Alerts & Escalations</span>
+        ${activeAlerts > 0 ? `<span class="bg-rose-500 text-white text-[10px] font-bold px-1.5 py-0.2 rounded-full">${activeAlerts}</span>` : ''}
+      </button>
+      <button onclick="switchColdChainSubTab('compliance')" class="py-2 px-3.5 rounded-xl text-xs font-bold transition ${state.coldChainSubTab === 'compliance' ? 'bg-teal-600 text-white shadow-sm' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}">
+        🛡️ Compliance & Spoilage Radar
+      </button>
+      <button onclick="switchColdChainSubTab('simulation')" class="py-2 px-3.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${state.coldChainSubTab === 'simulation' ? 'bg-amber-600 text-white shadow-sm' : 'bg-amber-50 text-amber-900 hover:bg-amber-100 border border-amber-200'}">
+        <span>⚡ Hardware Simulation Console</span>
+      </button>
+    </div>
+
+    <!-- Dynamic Subtab Container -->
+    <div id="coldChainDynamicArea" class="space-y-6">
+      <!-- Injected by updateColdChainContent -->
+    </div>
+  `;
+
+  updateColdChainContent(document.getElementById("coldChainDynamicArea"));
+}
+
+function switchColdChainSubTab(tab) {
+  state.coldChainSubTab = tab;
+  renderColdChainDashboard(document.getElementById("mainViewContent"));
+}
+
+function updateColdChainContent(container) {
+  if (!container) return;
+
+  switch(state.coldChainSubTab) {
+    case 'overview':
+      renderColdChainOverviewSection(container);
+      break;
+    case 'monitoring':
+      renderUnitsGridSection(container);
+      break;
+    case 'history':
+      renderTelemetryHistorySection(container);
+      break;
+    case 'alerts':
+      renderAlertsEscalationSection(container);
+      break;
+    case 'compliance':
+      renderComplianceRadarSection(container);
+      break;
+    case 'simulation':
+      renderSimulationConsoleSection(container);
+      break;
+    default:
+      renderColdChainOverviewSection(container);
+  }
+}
+
+// -------------------------------------------------------------
+// SUBTAB 1: OVERVIEW & HEALTH MATRIX
+// -------------------------------------------------------------
+
+function renderColdChainOverviewSection(container) {
+  const units = state.storageUnits;
+  const breaches = state.temperatureAlerts.filter(a => a.status !== 'resolved');
+
+  container.innerHTML = `
+    <div class="space-y-6">
+      <!-- Active Breach Warning Callout if any -->
+      ${breaches.length > 0 ? `
+        <div class="p-4 rounded-2xl bg-rose-50 border border-rose-200 flex items-start justify-between gap-3 shadow-sm">
+          <div class="flex items-start gap-3">
+            <span class="text-2xl">🚨</span>
+            <div>
+              <h4 class="text-sm font-bold text-rose-950">Active Thermal Excursion Notice (${breaches.length} Unit)</h4>
+              <p class="text-xs text-rose-800 mt-0.5">
+                ${breaches[0].unit_name} is operating at ${breaches[0].breach_temp.toFixed(1)}°C, exceeding statutory threshold of ${breaches[0].threshold_temp.toFixed(1)}°C.
+                Escalation Tier: <strong>${breaches[0].status.replace(/_/g, ' ').toUpperCase()}</strong>.
+              </p>
+            </div>
+          </div>
+          <button onclick="switchColdChainSubTab('alerts')" class="py-2 px-3 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold transition whitespace-nowrap shadow-sm">
+            Resolve Incident →
+          </button>
+        </div>
+      ` : `
+        <div class="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-between gap-3 shadow-sm">
+          <div class="flex items-center gap-3">
+            <span class="text-2xl">🟢</span>
+            <div>
+              <h4 class="text-sm font-bold text-emerald-950">All Cold-Chain Units Operating Within Safe Thresholds</h4>
+              <p class="text-xs text-emerald-800 mt-0.5">
+                All refrigeration units comply with FSSAI Schedule IV & statutory HACCP Critical Control Point CCP-1.
+              </p>
+            </div>
+          </div>
+          <button onclick="switchColdChainSubTab('monitoring')" class="py-2 px-3 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold transition whitespace-nowrap">
+            View Live Monitoring →
+          </button>
+        </div>
+      `}
+
+      <!-- Quick Storage Health Matrix -->
+      <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+        <div class="flex items-center justify-between pb-3 mb-4 border-b border-slate-100">
+          <div>
+            <h3 class="text-sm font-bold text-slate-800">Storage Unit Quick Status Matrix</h3>
+            <p class="text-xs text-slate-500">Live summary of refrigerated units and statutory temperature parameters.</p>
+          </div>
+          <button onclick="switchColdChainSubTab('monitoring')" class="text-xs font-bold text-teal-700 hover:underline">
+            Open Full Grid →
+          </button>
+        </div>
+
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead>
+              <tr class="border-b border-slate-200 text-slate-400 uppercase text-[10px]">
+                <th class="py-2.5 px-3">Unit ID</th>
+                <th class="py-2.5 px-3">Storage Unit</th>
+                <th class="py-2.5 px-3">Current Temp</th>
+                <th class="py-2.5 px-3">Safe Range</th>
+                <th class="py-2.5 px-3">Humidity</th>
+                <th class="py-2.5 px-3">Latest Ping</th>
+                <th class="py-2.5 px-3">Safety Status</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100 font-medium">
+              ${units.map(u => {
+                let badgeClass = "badge-compliant";
+                let statusText = "🟢 Normal";
+                let tempColor = "text-slate-800";
+
+                if (u.status === "critical_breach") {
+                  badgeClass = "badge-danger";
+                  statusText = "🔴 Critical Breach";
+                  tempColor = "text-rose-600 font-black";
+                } else if (u.status === "warning") {
+                  badgeClass = "badge-warning";
+                  statusText = "🟡 Warning";
+                  tempColor = "text-amber-600 font-bold";
+                }
+
+                return `
+                  <tr class="hover:bg-slate-50 cursor-pointer" onclick="selectUnitForHistory(${u.id})">
+                    <td class="py-3 px-3 font-mono text-slate-500 text-[11px]">#${u.id}</td>
+                    <td class="py-3 px-3 font-bold text-slate-900">${u.name}</td>
+                    <td class="py-3 px-3 text-sm ${tempColor}">${u.current_temp.toFixed(1)}°C</td>
+                    <td class="py-3 px-3 text-slate-600">${u.min_temp}°C to ${u.max_temp}°C</td>
+                    <td class="py-3 px-3 text-slate-600">${u.current_humidity ? u.current_humidity.toFixed(0) : 70}% RH</td>
+                    <td class="py-3 px-3 text-slate-500 font-mono text-[11px]">${u.last_ping ? u.last_ping.slice(11, 19) + ' UTC' : 'Live'}</td>
+                    <td class="py-3 px-3">
+                      <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${badgeClass}">
+                        ${statusText}
+                      </span>
+                    </td>
+                  </tr>
+                `;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Quick Action Navigation Shortcuts Grid -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div onclick="switchColdChainSubTab('history')" class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm hover:shadow-md transition cursor-pointer group">
+          <div class="flex items-center gap-2 mb-2 text-teal-700">
+            <span class="text-xl">📈</span>
+            <h4 class="font-bold text-xs uppercase tracking-wider text-slate-900 group-hover:text-teal-700 transition">Telemetry History</h4>
+          </div>
+          <p class="text-xs text-slate-500">Inspect time-series telemetry trend graphs and chronological logs for each storage unit.</p>
+        </div>
+
+        <div onclick="switchColdChainSubTab('compliance')" class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm hover:shadow-md transition cursor-pointer group">
+          <div class="flex items-center gap-2 mb-2 text-teal-700">
+            <span class="text-xl">🛡️</span>
+            <h4 class="font-bold text-xs uppercase tracking-wider text-slate-900 group-hover:text-teal-700 transition">Compliance & Spoilage</h4>
+          </div>
+          <p class="text-xs text-slate-500">Q10 microbial kinetics, degree-hour thermal abuse calculations, and batch shelf-life decay projection.</p>
+        </div>
+
+        <div onclick="switchColdChainSubTab('simulation')" class="bg-white rounded-2xl border border-amber-200 bg-amber-50/40 p-5 shadow-sm hover:shadow-md transition cursor-pointer group">
+          <div class="flex items-center gap-2 mb-2 text-amber-800">
+            <span class="text-xl">⚡</span>
+            <h4 class="font-bold text-xs uppercase tracking-wider text-slate-900 group-hover:text-amber-700 transition">Hardware Simulator</h4>
+          </div>
+          <p class="text-xs text-slate-600">Simulate safe sensor readings or excursion spikes via actual POST /api/temperature/telemetry endpoint.</p>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// -------------------------------------------------------------
+// SUBTAB 2: TEMPERATURE MONITORING (UNITS GRID & CARDS)
+// -------------------------------------------------------------
+
+function renderUnitsGridSection(container) {
+  const units = state.storageUnits;
+
+  container.innerHTML = `
+    <div>
+      <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <div>
+          <h3 class="text-sm font-bold text-slate-800">Temperature Monitoring — Storage Units Grid</h3>
+          <p class="text-xs text-slate-500">Displaying unit ID, current temperature, humidity, safety status, and latest reading time.</p>
+        </div>
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-slate-400">Total Monitored: <strong>${units.length} Units</strong></span>
+        </div>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        ${units.map(u => {
+          let badgeClass = "badge-compliant";
+          let statusText = "🟢 Normal / Safe";
+          let tempColor = "text-slate-900";
+
+          if (u.status === "critical_breach") {
+            badgeClass = "badge-danger";
+            statusText = "🔴 Critical Breach";
+            tempColor = "text-rose-600";
+          } else if (u.status === "warning") {
+            badgeClass = "badge-warning";
+            statusText = "🟡 Near Threshold";
+            tempColor = "text-amber-600";
+          }
+
+          const hasAlert = state.temperatureAlerts.some(a => a.unit_id === u.id && a.status !== 'resolved');
+
+          return `
+            <div class="bg-white rounded-2xl border ${u.status === 'critical_breach' ? 'border-rose-300 ring-2 ring-rose-200' : 'border-slate-200'} p-5 shadow-sm hover:shadow-md transition flex flex-col justify-between">
+              <div>
+                <!-- Top Card Bar: Unit ID & Name -->
+                <div class="flex items-start justify-between gap-2 mb-2">
+                  <div>
+                    <span class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Unit ID: #${u.id}</span>
+                    <h4 class="font-bold text-slate-900 text-sm leading-snug">${u.name}</h4>
+                    <p class="text-[11px] text-slate-500">${u.location_area || 'Central Storage Area'}</p>
+                  </div>
+                  <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${badgeClass}">
+                    ${statusText}
+                  </span>
+                </div>
+
+                <!-- Temperature Gauge Block -->
+                <div class="my-4 p-3 bg-slate-50 rounded-xl border border-slate-100 text-center">
+                  <div class="text-3xl font-black ${tempColor} tracking-tight">
+                    ${u.current_temp.toFixed(1)}°C
+                  </div>
+                  <div class="text-[11px] text-slate-500 mt-1 flex items-center justify-center gap-2">
+                    <span>Safe: ${u.min_temp}°C to ${u.max_temp}°C</span>
+                    <span>•</span>
+                    <span>Target: ${u.target_temp}°C</span>
+                  </div>
+                </div>
+
+                <!-- Humidity, Ping Time & Details -->
+                <div class="space-y-1.5 text-xs text-slate-600 mb-3">
+                  <div class="flex justify-between">
+                    <span class="text-slate-400">Current Humidity:</span>
+                    <span class="font-semibold text-slate-700">${u.current_humidity ? u.current_humidity.toFixed(0) : 70}% RH</span>
+                  </div>
+                  <div class="flex justify-between">
+                    <span class="text-slate-400">Latest Reading Time:</span>
+                    <span class="font-semibold text-slate-700 font-mono text-[11px]">${u.last_ping ? u.last_ping.slice(11, 19) + ' UTC' : 'Live'}</span>
+                  </div>
+                  <div class="flex justify-between">
+                    <span class="text-slate-400">Safety Status:</span>
+                    <span class="font-semibold ${u.status === 'critical_breach' ? 'text-rose-600' : 'text-slate-700'}">${u.status.replace(/_/g, ' ').toUpperCase()}</span>
+                  </div>
+                  <div class="flex justify-between">
+                    <span class="text-slate-400">Linked Batches:</span>
+                    <span class="font-semibold text-slate-700">${u.linked_batches_count || 1} Batch(es)</span>
+                  </div>
+                </div>
+
+                ${hasAlert ? `
+                  <div class="p-2 rounded-lg bg-rose-50 border border-rose-200 text-[11px] font-bold text-rose-700 mb-3 flex items-center justify-between">
+                    <span>Active Excursion Notice</span>
+                    <button onclick="switchColdChainSubTab('alerts')" class="underline hover:text-rose-900">Resolve</button>
+                  </div>
+                ` : ''}
+              </div>
+
+              <!-- Action Buttons -->
+              <div class="pt-3 border-t border-slate-100 flex gap-2">
+                <button onclick="selectUnitForHistory(${u.id})" class="flex-1 py-1.5 px-2 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition text-center">
+                  Inspect Trend
+                </button>
+                <button onclick="selectUnitForSimulation(${u.id})" class="py-1.5 px-3 rounded-lg bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold transition text-center" title="Transmit Telemetry Packet">
+                  Simulate
+                </button>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function selectUnitForHistory(unitId) {
+  state.selectedTelemetryUnitId = unitId;
+  switchColdChainSubTab('history');
+}
+
+function selectUnitForSimulation(unitId) {
+  state.selectedTelemetryUnitId = unitId;
+  switchColdChainSubTab('simulation');
+}
+
+// -------------------------------------------------------------
+// SUBTAB 3: TIME-SERIES TELEMETRY HISTORY & CHART
+// -------------------------------------------------------------
+
+function renderTelemetryHistorySection(container) {
+  const currentUnit = state.storageUnits.find(u => u.id === state.selectedTelemetryUnitId) || state.storageUnits[0];
+  const readings = state.telemetryHistory[currentUnit.id] || [];
+
+  container.innerHTML = `
+    <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm">
+      <!-- Section Header -->
+      <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-100">
+        <div>
+          <div class="flex items-center gap-2">
+            <h3 class="font-bold text-slate-900 text-sm">Time-Series Telemetry Trend</h3>
+            <span id="telemetryLogCountBadge" class="text-[10px] font-bold px-2 py-0.5 rounded-full ${readings.length > 0 ? 'bg-teal-50 text-teal-700 border border-teal-200' : 'bg-slate-100 text-slate-600'}">
+              ${readings.length > 0 ? `${readings.length} Ingested Logs` : 'No Logs Yet'}
+            </span>
+          </div>
+          <p class="text-xs text-slate-500">Chronological sensor readings with safe threshold limits and deviation analysis.</p>
+        </div>
+
+        <!-- Unit Selector Dropdown -->
+        <div class="flex items-center gap-2">
+          <label class="text-xs font-semibold text-slate-600">Selected Storage Unit:</label>
+          <select onchange="onSelectHistoryUnit(this.value)" class="py-1.5 px-3 rounded-xl border border-slate-300 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-teal-600">
+            ${state.storageUnits.map(u => `
+              <option value="${u.id}" ${u.id === currentUnit.id ? 'selected' : ''}>${u.name} (Now: ${u.current_temp.toFixed(1)}°C)</option>
+            `).join('')}
+          </select>
+        </div>
+      </div>
+
+      <!-- Unit Reference Metrics Strip -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 my-4 p-3 bg-slate-50 rounded-xl text-xs">
+        <div>
+          <span class="text-slate-400 block text-[11px]">Safe Min Limit</span>
+          <span class="font-bold text-slate-800">${currentUnit.min_temp}°C</span>
+        </div>
+        <div>
+          <span class="text-slate-400 block text-[11px]">Target Temperature</span>
+          <span class="font-bold text-teal-700">${currentUnit.target_temp}°C</span>
+        </div>
+        <div>
+          <span class="text-slate-400 block text-[11px]">Statutory Max Safe</span>
+          <span class="font-bold text-rose-700">${currentUnit.max_temp}°C</span>
+        </div>
+        <div>
+          <span class="text-slate-400 block text-[11px]">Operating Status</span>
+          <span class="font-bold text-slate-800 uppercase">${currentUnit.status.replace(/_/g, ' ')}</span>
+        </div>
+      </div>
+
+      <!-- Chart / Empty State Area -->
+      <div id="telemetryChartArea">
+        ${renderTelemetryChartOrEmptyState(currentUnit, readings)}
+      </div>
+    </div>
+  `;
+
+  // Background fetch for live API telemetry
+  apiCall(`/api/temperature/telemetry/${currentUnit.id}`).then(historyData => {
+    if (historyData && Array.isArray(historyData.readings)) {
+      state.telemetryHistory[currentUnit.id] = historyData.readings;
+      if (state.coldChainSubTab === 'history') {
+        const chartArea = document.getElementById("telemetryChartArea");
+        const countBadge = document.getElementById("telemetryLogCountBadge");
+        if (chartArea) {
+          chartArea.innerHTML = renderTelemetryChartOrEmptyState(currentUnit, historyData.readings);
+        }
+        if (countBadge) {
+          countBadge.className = `text-[10px] font-bold px-2 py-0.5 rounded-full ${historyData.readings.length > 0 ? 'bg-teal-50 text-teal-700 border border-teal-200' : 'bg-slate-100 text-slate-600'}`;
+          countBadge.textContent = historyData.readings.length > 0 ? `${historyData.readings.length} Ingested Logs` : 'No Logs Yet';
+        }
+      }
+    }
+  }).catch(() => {});
+}
+
+function renderTelemetryChartOrEmptyState(currentUnit, readings) {
+  if (!readings || readings.length === 0) {
+    return `
+      <!-- Useful Empty State (No Fabricated History) -->
+      <div class="my-6 p-8 text-center bg-slate-50 rounded-2xl border-2 border-dashed border-slate-200">
+        <div class="w-12 h-12 rounded-2xl bg-teal-50 text-teal-600 flex items-center justify-center mx-auto mb-3">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+        </div>
+        <h4 class="text-sm font-bold text-slate-800">No Telemetry History Logged for ${currentUnit.name}</h4>
+        <p class="text-xs text-slate-500 max-w-md mx-auto mt-1 mb-4">
+          No sensor telemetry data points have been recorded for this storage unit yet. Transmit a sensor reading from an IoT device or trigger a simulation to start recording historical trend data.
+        </p>
+        <div class="flex items-center justify-center gap-2">
+          <button onclick="handleQuickSimulation(${currentUnit.id}, false)" class="py-2 px-3.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold transition inline-flex items-center gap-1.5 shadow-md shadow-teal-600/20">
+            <span>Simulate Safe Reading (${currentUnit.target_temp}°C)</span>
+          </button>
+          <button onclick="selectUnitForSimulation(${currentUnit.id})" class="py-2 px-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold transition">
+            Open Simulator Console
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  return `
+    <!-- Historical Trend Bar Chart -->
+    <div class="my-6">
+      <div class="flex items-center justify-between text-xs text-slate-500 mb-2">
+        <span class="font-semibold text-slate-700">Chronological Telemetry Readings (${readings.length} points)</span>
+        <span class="text-rose-600 font-semibold flex items-center gap-1">
+          <span class="w-3 h-0.5 bg-rose-500 inline-block"></span> Safe Limit: ${currentUnit.max_temp}°C
+        </span>
+      </div>
+
+      <!-- Responsive Bar Chart Container -->
+      <div class="h-44 w-full bg-slate-50 rounded-xl border border-slate-200 p-4 flex items-end justify-between gap-1 sm:gap-2 relative overflow-hidden">
+
+        <!-- Safe Max Threshold Reference Line -->
+        <div class="absolute left-0 right-0 border-b border-dashed border-rose-400 pointer-events-none z-10" style="bottom: 50%;">
+          <span class="text-[9px] bg-rose-100 text-rose-800 px-1 py-0.2 rounded absolute right-2 -top-3 font-bold">Limit: ${currentUnit.max_temp}°C</span>
+        </div>
+
+        ${readings.map((r, idx) => {
+          const t = r.temperature;
+          const normalizedHeight = Math.min(95, Math.max(15, Math.round(((t - currentUnit.min_temp + 2) / (currentUnit.max_temp - currentUnit.min_temp + 4)) * 75)));
+          const isBreach = r.is_breach || (t > currentUnit.max_temp);
+          const barColor = isBreach ? 'bg-rose-500 hover:bg-rose-600' : (t > currentUnit.max_temp - 0.8 ? 'bg-amber-500 hover:bg-amber-600' : 'bg-teal-500 hover:bg-teal-600');
+
+          return `
+            <div class="flex-1 flex flex-col items-center h-full justify-end group relative cursor-pointer">
+              <!-- Tooltip -->
+              <div class="hidden group-hover:block absolute -top-10 bg-slate-900 text-white text-[10px] py-1 px-2 rounded shadow-lg whitespace-nowrap z-20">
+                ${t.toFixed(1)}°C | ${r.recorded_at.slice(11, 19)}
+              </div>
+              <!-- Bar -->
+              <div class="w-full max-w-[28px] rounded-t-md transition-all telemetry-chart-bar ${barColor}" style="height: ${normalizedHeight}%;"></div>
+              <!-- X-Axis label -->
+              <span class="text-[9px] text-slate-400 mt-1 truncate max-w-[32px]">${r.recorded_at.slice(11, 16)}</span>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+
+    <!-- Historical Logs Table -->
+    <div class="overflow-x-auto">
+      <table class="w-full text-left text-xs">
+        <thead>
+          <tr class="border-b border-slate-200 text-slate-400 uppercase text-[10px]">
+            <th class="py-2.5 px-3">Timestamp (UTC)</th>
+            <th class="py-2.5 px-3">Recorded Temperature</th>
+            <th class="py-2.5 px-3">Statutory Delta</th>
+            <th class="py-2.5 px-3">Humidity</th>
+            <th class="py-2.5 px-3">Compliance Status</th>
+            <th class="py-2.5 px-3">Data Origin</th>
+          </tr>
+        </thead>
+        <tbody class="divide-y divide-slate-100 font-medium">
+          ${[...readings].reverse().slice(0, 10).map(r => {
+            const delta = r.temperature - currentUnit.max_temp;
+            const isBreach = r.is_breach || delta > 0;
+            return `
+              <tr class="hover:bg-slate-50">
+                <td class="py-2.5 px-3 text-slate-600 font-mono text-[11px]">${r.recorded_at}</td>
+                <td class="py-2.5 px-3 font-bold ${isBreach ? 'text-rose-600' : 'text-slate-800'}">${r.temperature.toFixed(2)}°C</td>
+                <td class="py-2.5 px-3 text-[11px] ${delta > 0 ? 'text-rose-600 font-bold' : 'text-emerald-600'}">
+                  ${delta > 0 ? `+${delta.toFixed(2)}°C Excursion` : `${delta.toFixed(2)}°C Nominal`}
+                </td>
+                <td class="py-2.5 px-3 text-slate-600">${r.humidity ? r.humidity.toFixed(0) + '% RH' : 'N/A'}</td>
+                <td class="py-2.5 px-3">
+                  <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${isBreach ? 'badge-danger' : 'badge-compliant'}">
+                    ${isBreach ? 'Excursion Breach' : 'Compliant'}
+                  </span>
+                </td>
+                <td class="py-2.5 px-3 text-[10px] text-slate-400">
+                  ${r.is_simulation ? '[Simulated Stream]' : '[Live Sensor]'}
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function onSelectHistoryUnit(val) {
+  state.selectedTelemetryUnitId = parseInt(val);
+  renderTelemetryHistorySection(document.getElementById("coldChainDynamicArea"));
+}
+
+// -------------------------------------------------------------
+// SUBTAB 4: ALERTS & 3-TIER ESCALATION WORKFLOW
+// -------------------------------------------------------------
+
+function renderAlertsEscalationSection(container) {
+  const alerts = state.temperatureAlerts;
+
+  container.innerHTML = `
+    <div class="space-y-4">
+      <div class="flex items-center justify-between mb-2">
+        <div>
+          <h3 class="text-sm font-bold text-slate-800">Cold-Chain Breaches & Multi-Tier Escalation Incidents</h3>
+          <p class="text-xs text-slate-500">Automated progression: Kitchen Alert (Level 1) ➔ Store Manager (Level 2) ➔ Government Officer (Level 3).</p>
+        </div>
+        <span class="text-xs text-slate-400">Resolution requires documented corrective action notes</span>
+      </div>
+
+      ${alerts.length === 0 ? `
+        <div class="p-8 text-center bg-white rounded-2xl border border-slate-200">
+          <div class="text-3xl mb-2">🟢</div>
+          <h4 class="text-sm font-bold text-slate-800">No Cold-Chain Excursions Detected</h4>
+          <p class="text-xs text-slate-500 max-w-sm mx-auto mt-1">All storage refrigeration units are currently operating within safe FSSAI parameters.</p>
+        </div>
+      ` : alerts.map(a => {
+        const isResolved = a.status === 'resolved';
+        return `
+          <div class="bg-white rounded-2xl border ${isResolved ? 'border-slate-200 opacity-80' : 'border-rose-300 ring-2 ring-rose-100'} p-5 shadow-sm">
+            <!-- Header Bar -->
+            <div class="flex flex-wrap items-center justify-between gap-2 pb-3 mb-4 border-b border-slate-100">
+              <div class="flex items-center gap-2">
+                <span class="text-lg">${isResolved ? '✓' : '🚨'}</span>
+                <div>
+                  <h4 class="font-bold text-slate-900 text-sm">${a.unit_name}</h4>
+                  <span class="text-[11px] text-slate-400">Incident Detected: ${a.detected_at}</span>
+                </div>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="px-2.5 py-0.5 rounded-full text-[11px] font-bold ${isResolved ? 'badge-compliant' : 'badge-danger'}">
+                  ${isResolved ? 'Resolved & Closed' : `Excursion: ${a.breach_temp.toFixed(1)}°C (Limit: ${a.threshold_temp.toFixed(1)}°C)`}
+                </span>
+                ${!isResolved ? `
+                  <button onclick="openAcknowledgeAlertModal(${a.id})" class="py-1.5 px-3 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold transition shadow-sm">
+                    Acknowledge & Resolve
+                  </button>
+                ` : ''}
+              </div>
+            </div>
+
+            <!-- 3-Tier Escalation Stepper -->
+            <div class="mb-4 bg-slate-50 p-4 rounded-xl border border-slate-200">
+              <span class="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-2">Automated Escalation Stepper</span>
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <!-- Level 1 -->
+                <div class="p-2.5 rounded-lg border ${a.escalation_level >= 1 && !isResolved ? 'bg-amber-50 border-amber-300 text-amber-900' : 'bg-white border-slate-200 text-slate-500'}">
+                  <div class="font-bold text-xs flex items-center justify-between">
+                    <span>Level 1: Shift Kitchen</span>
+                    ${a.escalation_level >= 1 ? '<span>✓</span>' : ''}
+                  </div>
+                  <p class="text-[10px] mt-0.5">0-60m: Kitchen team notification</p>
+                </div>
+                <!-- Level 2 -->
+                <div class="p-2.5 rounded-lg border ${a.escalation_level >= 2 && !isResolved ? 'bg-rose-50 border-rose-300 text-rose-900 font-bold' : 'bg-white border-slate-200 text-slate-500'}">
+                  <div class="font-bold text-xs flex items-center justify-between">
+                    <span>Level 2: Store Manager</span>
+                    ${a.escalation_level >= 2 ? '<span>✓</span>' : ''}
+                  </div>
+                  <p class="text-[10px] mt-0.5">60-180m: Store GM Escalated</p>
+                </div>
+                <!-- Level 3 -->
+                <div class="p-2.5 rounded-lg border ${a.escalation_level >= 3 && !isResolved ? 'bg-red-100 border-red-400 text-red-950 font-black' : 'bg-white border-slate-200 text-slate-500'}">
+                  <div class="font-bold text-xs flex items-center justify-between">
+                    <span>Level 3: Food Safety Officer</span>
+                    ${a.escalation_level >= 3 ? '<span>🚨</span>' : ''}
+                  </div>
+                  <p class="text-[10px] mt-0.5">>180m: Regulatory Audit Queue</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Narrative & Action Notes -->
+            <p class="text-xs text-slate-600 mb-2"><strong>Audit Narrative:</strong> ${a.narrative || 'Temperature spiked above statutory threshold.'}</p>
+            ${a.corrective_action_notes ? `
+              <div class="mt-2 p-2.5 bg-emerald-50 rounded-lg border border-emerald-200 text-xs text-emerald-900">
+                <strong>Documented Corrective Action:</strong> ${a.corrective_action_notes}
+                <div class="text-[10px] text-emerald-700 mt-1">Logged by: ${a.acknowledged_by || 'Chef Vikram Mehra'}</div>
+              </div>
+            ` : ''}
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+// -------------------------------------------------------------
+// SUBTAB 5: COMPLIANCE & PREDICTIVE SPOILAGE RADAR
+// -------------------------------------------------------------
+
+function renderComplianceRadarSection(container) {
+  // Compute spoilage metrics from client stock or backend API predictions
+  const predictions = state.spoilagePredictions.length > 0 ? state.spoilagePredictions : [
+    {
+      batch_number: "AML-PAN-2026-B8",
+      item_name: "Fresh Malai Paneer Cubes",
+      category: "Dairy",
+      current_unit_name: "Walk-in Dairy & Cold Chiller #1",
+      current_temp: 3.2,
+      max_safe_temp: 4.0,
+      nominal_expiry: "2026-10-13 18:00",
+      cumulative_degree_hours: 0.0,
+      degradation_pct: 0.0,
+      predicted_safe_hours_remaining: 140.0,
+      risk_level: "Safe",
+      badge_class: "badge-compliant",
+      recommended_action: "Standard cold storage integrity maintained. Safe for normal recipe allocation."
+    },
+    {
+      batch_number: "AML-MLK-881",
+      item_name: "Amul Gold Full Cream Milk",
+      category: "Dairy",
+      current_unit_name: "Walk-in Dairy & Cold Chiller #1",
+      current_temp: 3.2,
+      max_safe_temp: 4.0,
+      nominal_expiry: "2026-10-11 08:00",
+      cumulative_degree_hours: 0.0,
+      degradation_pct: 5.2,
+      predicted_safe_hours_remaining: 44.5,
+      risk_level: "Safe",
+      badge_class: "badge-compliant",
+      recommended_action: "Safe for standard service. Normal shift consumption pacing recommended."
+    },
+    {
+      batch_number: "DES-PST-4019",
+      item_name: "Fresh Cream Fruit Tartlets",
+      category: "Dairy",
+      current_unit_name: "Salad & Dessert Display Counter",
+      current_temp: 7.8,
+      max_safe_temp: 6.0,
+      nominal_expiry: "2026-10-10 14:00",
+      cumulative_degree_hours: 3.6,
+      degradation_pct: 64.8,
+      predicted_safe_hours_remaining: 9.5,
+      risk_level: "Warning",
+      badge_class: "badge-warning",
+      recommended_action: "Accelerated Usage: Cook or serve within 10 hours. Sensory inspection mandatory before service."
+    }
+  ];
+
+  container.innerHTML = `
+    <div class="space-y-4">
+      <div class="flex items-center justify-between mb-2">
+        <div>
+          <h3 class="text-sm font-bold text-slate-800">Q10 Microbial Spoilage Kinetics & Shelf-Life Decay</h3>
+          <p class="text-xs text-slate-500">Degree-hour thermal abuse algorithm dynamically predicting perishable batch spoilage.</p>
+        </div>
+        <span class="text-xs text-slate-400">Statutory standard: FSSAI Section 14</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        ${predictions.map(p => `
+          <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm flex flex-col justify-between">
+            <div>
+              <div class="flex items-start justify-between gap-2 mb-2">
+                <div>
+                  <span class="text-[10px] text-slate-400 font-mono">Batch: ${p.batch_number}</span>
+                  <h4 class="font-bold text-slate-900 text-sm leading-snug">${p.item_name}</h4>
+                  <span class="text-[11px] text-teal-700 font-semibold">${p.category} • ${p.current_unit_name}</span>
+                </div>
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${p.badge_class}">
+                  ${p.risk_level}
+                </span>
+              </div>
+
+              <!-- Thermal Abuse & Degradation Progress -->
+              <div class="my-3 p-3 bg-slate-50 rounded-xl space-y-2 text-xs">
+                <div class="flex justify-between">
+                  <span class="text-slate-500">Thermal Abuse:</span>
+                  <span class="font-bold text-slate-800">${p.cumulative_degree_hours.toFixed(1)} °C·hrs</span>
+                </div>
+                <div class="flex justify-between">
+                  <span class="text-slate-500">Degradation:</span>
+                  <span class="font-bold ${p.degradation_pct > 50 ? 'text-rose-600' : 'text-slate-800'}">${p.degradation_pct.toFixed(1)}%</span>
+                </div>
+                <div class="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                  <div class="${p.degradation_pct > 50 ? 'bg-rose-500' : 'bg-teal-500'} h-1.5 rounded-full" style="width: ${p.degradation_pct}%;"></div>
+                </div>
+                <div class="flex justify-between text-[11px]">
+                  <span class="text-slate-400">Predicted Safe Hours:</span>
+                  <span class="font-extrabold ${p.predicted_safe_hours_remaining < 24 ? 'text-amber-700' : 'text-emerald-700'}">${p.predicted_safe_hours_remaining.toFixed(1)} hrs</span>
+                </div>
+              </div>
+
+              <!-- Recommended Action -->
+              <div class="p-2.5 rounded-xl ${p.risk_level === 'Safe' ? 'bg-emerald-50 text-emerald-900' : 'bg-amber-50 text-amber-900'} text-xs font-medium">
+                <strong>SOP Directive:</strong> ${p.recommended_action}
+              </div>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+// -------------------------------------------------------------
+// SUBTAB 6: HARDWARE SIMULATION CONSOLE (DEMO WORKFLOW)
+// -------------------------------------------------------------
+
+function renderSimulationConsoleSection(container) {
+  const selectedUnit = state.storageUnits.find(u => u.id === state.selectedTelemetryUnitId) || state.storageUnits[0];
+
+  container.innerHTML = `
+    <div class="bg-white rounded-2xl border border-amber-200 shadow-sm p-6 space-y-6">
+      <!-- Demo Banner with Demo Mode Indicator -->
+      <div class="p-4 bg-amber-50/80 rounded-xl border border-amber-200 flex items-start gap-3">
+        <span class="text-2xl">⚡</span>
+        <div>
+          <div class="flex items-center gap-2">
+            <h4 class="text-sm font-bold text-amber-900">Hardware Demonstration Console</h4>
+            <span class="text-[10px] bg-amber-200 text-amber-900 font-bold px-1.5 py-0.5 rounded">POST /api/temperature/telemetry</span>
+            <span class="text-[10px] bg-amber-100 text-amber-800 font-semibold px-1.5 py-0.5 rounded border border-amber-300">Demo Mode</span>
+          </div>
+          <p class="text-xs text-amber-800 mt-0.5">
+            Demonstrates real IoT sensor packet transmission into FoodShield's ingestion pipeline. All injected records are explicitly marked with <code>is_simulation: true</code>.
+          </p>
+        </div>
+      </div>
+
+      <!-- Quick 1-Click Simulation Buttons with Loading States -->
+      <div>
+        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">1-Click Demonstration Scenarios</h4>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+
+          <!-- Button 1: Safe Reading -->
+          <button id="btnSimSafe" onclick="handleQuickSimulation(${selectedUnit.id}, false)" class="p-4 rounded-xl border border-emerald-200 bg-emerald-50/60 hover:bg-emerald-100 text-left transition flex items-center justify-between group disabled:opacity-50">
+            <div>
+              <div class="font-bold text-emerald-950 text-xs flex items-center gap-1.5">
+                <span>🟢</span>
+                <span id="txtSimSafe">Simulate Safe Reading</span>
+              </div>
+              <p class="text-[11px] text-emerald-700 mt-1">
+                Injects compliant ${selectedUnit.target_temp.toFixed(1)}°C reading into ${selectedUnit.name}.
+              </p>
+            </div>
+            <span class="text-xs font-bold text-emerald-700 group-hover:translate-x-1 transition">Transmit →</span>
+          </button>
+
+          <!-- Button 2: Excursion Breach -->
+          <button id="btnSimBreach" onclick="handleQuickSimulation(${selectedUnit.id}, true)" class="p-4 rounded-xl border border-rose-200 bg-rose-50/60 hover:bg-rose-100 text-left transition flex items-center justify-between group disabled:opacity-50">
+            <div>
+              <div class="font-bold text-rose-950 text-xs flex items-center gap-1.5">
+                <span>🔴</span>
+                <span id="txtSimBreach">Simulate Temperature Breach</span>
+              </div>
+              <p class="text-[11px] text-rose-700 mt-1">
+                Injects ${(selectedUnit.max_temp + 3.8).toFixed(1)}°C excursion into ${selectedUnit.name}. Evaluates alert threshold.
+              </p>
+            </div>
+            <span class="text-xs font-bold text-rose-700 group-hover:translate-x-1 transition">Transmit →</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Custom Ingestion Form -->
+      <form onsubmit="handleCustomTelemetrySubmit(event)" class="pt-4 border-t border-slate-100 space-y-4">
+        <h4 class="text-xs font-bold uppercase tracking-wider text-slate-500">Custom Sensor Packet Dispatcher</h4>
+        <div class="grid grid-cols-1 sm:grid-cols-4 gap-3">
+          <div>
+            <label class="block text-[11px] font-semibold text-slate-600 mb-1">Target Unit</label>
+            <select id="simTargetUnit" onchange="onSelectSimUnit(this.value)" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-semibold text-slate-800">
+              ${state.storageUnits.map(u => `
+                <option value="${u.id}" ${u.id === selectedUnit.id ? 'selected' : ''}>${u.name}</option>
+              `).join('')}
+            </select>
+          </div>
+          <div>
+            <label class="block text-[11px] font-semibold text-slate-600 mb-1">Temperature (°C)</label>
+            <input type="number" step="0.1" id="simTempInput" value="${selectedUnit.current_temp.toFixed(1)}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-semibold text-slate-800">
+          </div>
+          <div>
+            <label class="block text-[11px] font-semibold text-slate-600 mb-1">Humidity (% RH)</label>
+            <input type="number" step="1" id="simHumInput" value="${selectedUnit.current_humidity ? selectedUnit.current_humidity.toFixed(0) : 70}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs font-semibold text-slate-800">
+          </div>
+          <div class="flex items-end">
+            <button type="submit" id="simSubmitBtn" class="w-full py-2 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition flex items-center justify-center gap-1.5 disabled:opacity-50">
+              <span id="simSubmitBtnText">Send Telemetry</span>
+            </button>
+          </div>
+        </div>
+      </form>
+
+      <!-- Live Wire & Response Inspector Banner -->
+      <div id="simResponseBanner" class="hidden p-4 rounded-xl text-xs space-y-2 border"></div>
+    </div>
+  `;
+}
+
+function onSelectSimUnit(val) {
+  state.selectedTelemetryUnitId = parseInt(val);
+  renderSimulationConsoleSection(document.getElementById("coldChainDynamicArea"));
+}
+
+// -------------------------------------------------------------
+// DEMO INTERACTION HANDLERS & MODALS
+// -------------------------------------------------------------
+
+async function handleQuickSimulation(unitId, isBreach) {
+  const unit = state.storageUnits.find(u => u.id === unitId) || state.storageUnits[0];
+  const targetTemp = isBreach ? (unit.max_temp + 3.8) : unit.target_temp;
+  const humidity = isBreach ? 82.0 : (unit.current_humidity || 72.0);
+
+  // Exact request schema discovered from backend/schemas.py (TelemetryLogCreate)
+  const payload = {
+    unit_id: unit.id,
+    temperature: parseFloat(targetTemp.toFixed(1)),
+    humidity: parseFloat(humidity.toFixed(1)),
+    sensor_battery_pct: 98.0,
+    is_simulation: true
+  };
+
+  // Set loading states on simulation buttons
+  const btnSafe = document.getElementById("btnSimSafe");
+  const btnBreach = document.getElementById("btnSimBreach");
+  const txtSafe = document.getElementById("txtSimSafe");
+  const txtBreach = document.getElementById("txtSimBreach");
+  if (btnSafe) btnSafe.disabled = true;
+  if (btnBreach) btnBreach.disabled = true;
+  if (isBreach && txtBreach) txtBreach.textContent = "Transmitting Breach Payload...";
+  if (!isBreach && txtSafe) txtSafe.textContent = "Transmitting Safe Payload...";
+
+  showToast(`Transmitting ${isBreach ? 'breach' : 'compliant'} packet to backend...`, "info");
+
+  const startTime = Date.now();
+  let responseData = null;
+  let isApiError = false;
+
+  try {
+    const res = await apiCall("/api/temperature/telemetry", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+    responseData = res;
+
+    // Update local storage unit state directly from backend response
+    unit.current_temp = res.recorded_temp;
+    unit.status = res.status;
+    unit.last_ping = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+
+    // Record reading in time-series history
+    if (!state.telemetryHistory[unit.id]) state.telemetryHistory[unit.id] = [];
+    state.telemetryHistory[unit.id].push({
+      id: Date.now(),
+      temperature: res.recorded_temp,
+      humidity: payload.humidity,
+      recorded_at: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
+      is_breach: res.is_breach,
+      is_simulation: true
+    });
+
+    // Alert Handling: Never claim an alert was created unless backend confirms it via alert_id!
+    if (res.alert_id) {
+      state.temperatureAlerts.unshift({
+        id: res.alert_id,
+        unit_id: unit.id,
+        unit_name: unit.name,
+        restaurant_id: 1,
+        breach_temp: res.recorded_temp,
+        threshold_temp: unit.max_temp,
+        severity: "critical",
+        escalation_level: 1,
+        status: "level_1_kitchen_alert",
+        narrative: res.narrative,
+        detected_at: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
+        acknowledged_at: null
+      });
+      showToast(`🚨 Breach confirmed by backend: ${res.narrative}`, "error");
+    } else if (res.is_breach) {
+      showToast(`⚠️ Excursion recorded: ${res.narrative} (Alert already active)`, "warning");
+    } else {
+      showToast(`✓ Safe reading logged: ${res.narrative}`, "success");
+    }
+
+    // Refresh backend data
+    syncColdChainData().catch(() => {});
+  } catch (err) {
+    isApiError = true;
+    const elapsed = Date.now() - startTime;
+
+    // Fallback in demo mode: Record locally with clear Demo Mode labeling
+    unit.current_temp = payload.temperature;
+    unit.status = isBreach ? "critical_breach" : "normal";
+    unit.last_ping = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+
+    if (!state.telemetryHistory[unit.id]) state.telemetryHistory[unit.id] = [];
+    state.telemetryHistory[unit.id].push({
+      id: Date.now(),
+      temperature: payload.temperature,
+      humidity: payload.humidity,
+      recorded_at: new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC',
+      is_breach: isBreach,
+      is_simulation: true
+    });
+
+    if (isBreach) {
+      showToast(`[Demo Mode Fallback] Ingested ${payload.temperature}°C breach locally (API offline)`, "warning");
+    } else {
+      showToast(`[Demo Mode Fallback] Ingested ${payload.temperature}°C safe reading locally`, "success");
+    }
+
+    responseData = {
+      fallback: true,
+      offline: true,
+      note: "Backend at http://127.0.0.1:8000 unreachable. Processed locally in Demo Mode."
+    };
+  } finally {
+    // Re-enable buttons
+    if (btnSafe) btnSafe.disabled = false;
+    if (btnBreach) btnBreach.disabled = false;
+    if (txtSafe) txtSafe.textContent = "Simulate Safe Reading";
+    if (txtBreach) txtBreach.textContent = "Simulate Temperature Breach";
+
+    // Update inspector banner if on simulation subtab
+    const banner = document.getElementById("simResponseBanner");
+    if (banner) {
+      const elapsed = Date.now() - startTime;
+      banner.className = `p-4 rounded-xl text-xs space-y-2 border ${isApiError ? 'bg-amber-50 text-amber-950 border-amber-200' : 'bg-emerald-50 text-emerald-950 border-emerald-200'}`;
+      banner.innerHTML = `
+        <div class="flex items-center justify-between pb-1 border-b ${isApiError ? 'border-amber-200' : 'border-emerald-200'}">
+          <span class="font-bold uppercase tracking-wider text-[10px]">Wire Transaction Inspection (${elapsed}ms)</span>
+          <span class="font-mono text-[10px] font-bold ${isApiError ? 'text-amber-800' : 'text-emerald-800'}">
+            ${isApiError ? 'Status: 0 Offline Fallback' : 'Status: 200 OK'}
+          </span>
+        </div>
+        <div>
+          <span class="text-[10px] font-semibold text-slate-500 block">Outbound Ingestion Payload:</span>
+          <pre class="bg-slate-900 text-teal-300 p-2 rounded-lg font-mono text-[11px] overflow-x-auto">${JSON.stringify(payload, null, 2)}</pre>
+        </div>
+        <div>
+          <span class="text-[10px] font-semibold text-slate-500 block">Response Received:</span>
+          <pre class="bg-slate-900 text-slate-100 p-2 rounded-lg font-mono text-[11px] overflow-x-auto">${JSON.stringify(responseData, null, 2)}</pre>
+        </div>
+        ${!isApiError && responseData.alert_id ? `
+          <div class="text-[11px] font-bold text-rose-700">
+            ✓ Backend Confirmed Alert Creation: Incident ID #${responseData.alert_id}
+          </div>
+        ` : ''}
+      `;
+      banner.classList.remove("hidden");
+    }
+
+    renderColdChainDashboard(document.getElementById("mainViewContent"));
+  }
+}
+
+async function handleCustomTelemetrySubmit(e) {
+  e.preventDefault();
+  const unitId = parseInt(document.getElementById("simTargetUnit").value);
+  const temp = parseFloat(document.getElementById("simTempInput").value);
+  const hum = parseFloat(document.getElementById("simHumInput").value);
+  const btn = document.getElementById("simSubmitBtn");
+  const btnText = document.getElementById("simSubmitBtnText");
+  const banner = document.getElementById("simResponseBanner");
+
+  if (btn) btn.disabled = true;
+  if (btnText) btnText.textContent = "Sending...";
+
+  const payload = {
+    unit_id: unitId,
+    temperature: temp,
+    humidity: hum,
+    sensor_battery_pct: 95.0,
+    is_simulation: true
+  };
+
+  try {
+    const res = await apiCall("/api/temperature/telemetry", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+    banner.className = `p-4 rounded-xl text-xs space-y-2 border ${res.is_breach ? 'bg-rose-50 text-rose-900 border-rose-200' : 'bg-emerald-50 text-emerald-900 border-emerald-200'}`;
+    banner.innerHTML = `
+      <strong>Backend API Response:</strong> ${res.narrative}
+      <pre class="bg-slate-900 text-slate-100 p-2 rounded-lg font-mono text-[11px] overflow-x-auto mt-1">${JSON.stringify(res, null, 2)}</pre>
+    `;
+    banner.classList.remove("hidden");
+    showToast("Telemetry successfully ingested", "success");
+    syncColdChainData();
+  } catch (err) {
+    banner.className = "p-4 rounded-xl text-xs space-y-2 border bg-amber-50 text-amber-900 border-amber-200";
+    banner.innerHTML = `
+      <strong>Demo Fallback Dispatch:</strong> ${temp}°C processed locally. (Backend at http://127.0.0.1:8000 is offline).
+      <pre class="bg-slate-900 text-slate-100 p-2 rounded-lg font-mono text-[11px] overflow-x-auto mt-1">${JSON.stringify(payload, null, 2)}</pre>
+    `;
+    banner.classList.remove("hidden");
+  } finally {
+    if (btn) btn.disabled = false;
+    if (btnText) btnText.textContent = "Send Telemetry";
+  }
+}
+
+function refreshColdChainView() {
+  showToast("Synchronizing with backend REST API...", "info");
+  syncColdChainData().then(() => {
+    renderColdChainDashboard(document.getElementById("mainViewContent"));
+    showToast("Cold Chain Data Synchronized", "success");
+  });
+}
+
+function openAcknowledgeAlertModal(alertId) {
+  const alert = state.temperatureAlerts.find(a => a.id === alertId);
+  if (!alert) return;
+
+  const modalTitle = document.getElementById("actionModalTitle");
+  const modalContent = document.getElementById("actionModalContent");
+
+  modalTitle.textContent = `Acknowledge Incident: ${alert.unit_name}`;
+  modalContent.innerHTML = `
+    <form onsubmit="submitAlertAcknowledgmentForm(event, ${alert.id})" class="space-y-4">
+      <div class="p-3 bg-rose-50 rounded-xl border border-rose-200 text-xs text-rose-900">
+        <strong>Active Excursion:</strong> Current ${alert.breach_temp}°C exceeds statutory limit of ${alert.threshold_temp}°C.
+        <div class="text-[11px] mt-0.5">${alert.narrative}</div>
+      </div>
+
+      <div>
+        <label class="block text-xs font-semibold text-slate-700 mb-1">Documented Corrective Action Note (Mandatory)</label>
+        <textarea id="ackActionNotes" required rows="3" placeholder="e.g. Adjusted thermostat dial, inspected door gasket seal, and relocated dairy items to Walk-in Chiller Unit #1." class="w-full p-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-600 focus:outline-none"></textarea>
+      </div>
+
+      <div>
+        <label class="block text-xs font-semibold text-slate-700 mb-1">Acknowledging Staff Officer</label>
+        <input type="text" id="ackStaffName" value="${state.currentUser ? state.currentUser.name : 'Chef Vikram Mehra'}" class="w-full p-2.5 rounded-xl border border-slate-300 text-xs font-semibold">
+      </div>
+
+      <div class="flex gap-2 pt-2 border-t border-slate-100">
+        <button type="button" onclick="closeActionModal()" class="flex-1 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600">Cancel</button>
+        <button type="submit" class="flex-1 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold shadow-md shadow-teal-600/20">Submit Resolution Note</button>
+      </div>
+    </form>
+  `;
+  openActionModal();
+}
+
+async function submitAlertAcknowledgmentForm(e, alertId) {
+  e.preventDefault();
+  const notes = document.getElementById("ackActionNotes").value.trim();
+  const staff = document.getElementById("ackStaffName").value.trim();
+
+  try {
+    await apiCall(`/api/temperature/alerts/${alertId}/acknowledge`, {
+      method: "POST",
+      body: JSON.stringify({ action_notes: notes, actor_name: staff })
+    });
+  } catch(err) {
+    console.log("Local resolution applied (backend offline):", err.message);
+  }
+
+  // Update local alert state
+  const foundAlert = state.temperatureAlerts.find(a => a.id === alertId);
+  if (foundAlert) {
+    foundAlert.status = "resolved";
+    foundAlert.corrective_action_notes = notes;
+    foundAlert.acknowledged_by = staff;
+    foundAlert.acknowledged_at = new Date().toISOString();
+  }
+
+  closeActionModal();
+  logAuditEvent("TEMPERATURE_BREACH_ACKNOWLEDGED", `Staff acknowledged excursion on alert #${alertId}: ${notes}`);
+  showToast("Corrective Action Logged. Escalation Halted.", "success");
+  renderColdChainDashboard(document.getElementById("mainViewContent"));
+}
+
+function openRegisterUnitModal() {
+  const modalTitle = document.getElementById("actionModalTitle");
+  const modalContent = document.getElementById("actionModalContent");
+
+  modalTitle.textContent = "Register Refrigerated Storage Unit";
+  modalContent.innerHTML = `
+    <form onsubmit="submitNewUnitForm(event)" class="space-y-3">
+      <div>
+        <label class="block text-xs font-semibold text-slate-700 mb-1">Unit Name</label>
+        <input type="text" id="newUnitName" required placeholder="e.g. Pastry & Cream Counter Unit #2" class="w-full p-2.5 rounded-xl border border-slate-300 text-xs">
+      </div>
+      <div>
+        <label class="block text-xs font-semibold text-slate-700 mb-1">Unit Classification</label>
+        <select id="newUnitType" class="w-full p-2.5 rounded-xl border border-slate-300 text-xs font-semibold">
+          <option value="walk_in_chiller">Walk-in Dairy & Cold Chiller (0.5°C to 4.0°C)</option>
+          <option value="deep_freezer">Deep Meat & Seafood Freezer (-22°C to -18°C)</option>
+          <option value="prep_refrigerator">Line Prep Cook Refrigerator (1.0°C to 5.0°C)</option>
+          <option value="display_counter">Salad & Dessert Display Counter (2.0°C to 6.0°C)</option>
+          <option value="hot_holding">Hot Holding Buffet Counter (63.0°C to 85.0°C)</option>
+        </select>
+      </div>
+      <div>
+        <label class="block text-xs font-semibold text-slate-700 mb-1">Location Area</label>
+        <input type="text" id="newUnitArea" value="Main Kitchen Area" class="w-full p-2.5 rounded-xl border border-slate-300 text-xs">
+      </div>
+      <div class="flex gap-2 pt-2 border-t border-slate-100">
+        <button type="button" onclick="closeActionModal()" class="flex-1 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-600">Cancel</button>
+        <button type="submit" class="flex-1 py-2 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold">Register Unit</button>
+      </div>
+    </form>
+  `;
+  openActionModal();
+}
+
+async function submitNewUnitForm(e) {
+  e.preventDefault();
+  const name = document.getElementById("newUnitName").value.trim();
+  const unitType = document.getElementById("newUnitType").value;
+  const area = document.getElementById("newUnitArea").value.trim();
+
+  const payload = {
+    name,
+    unit_type: unitType,
+    location_area: area
+  };
+
+  try {
+    const res = await apiCall("/api/temperature/units", {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+    if (res && res.id) {
+      state.storageUnits.push(res);
+    }
+  } catch(err) {
+    state.storageUnits.push({
+      id: state.storageUnits.length + 1,
+      name,
+      unit_type: unitType,
+      location_area: area,
+      min_temp: 1.0,
+      max_temp: 4.0,
+      target_temp: 2.5,
+      current_temp: 2.8,
+      current_humidity: 70.0,
+      status: "normal",
+      last_ping: new Date().toISOString(),
+      active_breaches_count: 0,
+      linked_batches_count: 0
+    });
+  }
+
+  closeActionModal();
+  logAuditEvent("STORAGE_UNIT_CREATED", `Registered new unit ${name} (${unitType})`);
+  showToast(`Unit '${name}' registered`, "success");
+  renderColdChainDashboard(document.getElementById("mainViewContent"));
+}
+
+// -------------------------------------------------------------
+// OFFICER PORTAL: COLD-CHAIN STATUTORY EXCURSIONS VIEW
+// -------------------------------------------------------------
+
+function renderOfficerColdChainExcursions(container) {
+  container.innerHTML = `
+    <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-100">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="text-xl">🏛️</span>
+            <h3 class="font-bold text-slate-900 text-base">Government Food-Safety Officer — Cold-Chain Escalation Registry</h3>
+          </div>
+          <p class="text-xs text-slate-500">Statutory FSSAI Section 14 & Schedule IV enforcement: active Level 2/3 cold storage violations.</p>
+        </div>
+        <span class="text-xs font-bold text-rose-700 bg-rose-50 px-2.5 py-1 rounded-lg border border-rose-200">1 Escalated Incident Active</span>
+      </div>
+
+      <div class="p-4 bg-amber-50 rounded-xl border border-amber-200 text-xs text-amber-900 flex items-start gap-3">
+        <span class="text-xl">⚠️</span>
+        <div>
+          <strong>Statutory Compliance Directive:</strong>
+          Any unmitigated cold-chain deviation exceeding 3 hours or $\ge 5.0$°C excursion triggers mandatory spot audit and potential seizure notice under FSSAI Regulations.
+        </div>
+      </div>
+
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs">
+          <thead>
+            <tr class="border-b border-slate-200 text-slate-400 uppercase text-[10px]">
+              <th class="py-2.5 px-3">Establishment</th>
+              <th class="py-2.5 px-3">FSSAI License</th>
+              <th class="py-2.5 px-3">Breached Unit</th>
+              <th class="py-2.5 px-3">Recorded Temp</th>
+              <th class="py-2.5 px-3">Escalation Tier</th>
+              <th class="py-2.5 px-3">Statutory Violation</th>
+              <th class="py-2.5 px-3">Action</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100 font-medium">
+            <tr class="hover:bg-slate-50">
+              <td class="py-3 px-3 font-bold text-slate-900">The Royal Spice Kitchen</td>
+              <td class="py-3 px-3 text-slate-600 font-mono text-[11px]">10020011000432</td>
+              <td class="py-3 px-3 text-slate-800">Salad & Dessert Display Counter</td>
+              <td class="py-3 px-3 font-extrabold text-rose-600">7.8°C (Limit: 6.0°C)</td>
+              <td class="py-3 px-3">
+                <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                  Level 2: Manager Escalated
+                </span>
+              </td>
+              <td class="py-3 px-3 text-[11px] text-slate-600">FSSAI-SCHED-IV-SEC-5</td>
+              <td class="py-3 px-3">
+                <button onclick="showToast('Statutory Temperature Directive Notice Issued', 'info')" class="py-1 px-2.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-bold">
+                  Issue Directive
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+// =============================================================
+// DEMANDSENSE AI: DEMAND FORECASTING & REPLENISHMENT UI ENGINE
+// =============================================================
+
+async function syncDemandSenseData(restaurantId = 1) {
+  const mult = state.demandSense.demandMultiplier || 1.0;
+  const horizon = state.demandSense.horizonDays || 7;
+
+  try {
+    const health = await apiCall("/api/forecast/health");
+    if (health && health.status === "healthy") {
+      state.isApiConnected = true;
+      updateApiStatusBadge(true);
+    }
+  } catch (e) {}
+
+  try {
+    const forecasts = await apiCall(`/api/forecast/sales?restaurant_id=${restaurantId}&horizon_days=${horizon}&multiplier=${mult}`);
+    if (Array.isArray(forecasts)) state.demandSense.forecasts = forecasts;
+  } catch (e) {}
+
+  try {
+    const ingDemands = await apiCall(`/api/forecast/ingredients?restaurant_id=${restaurantId}&horizon_days=${horizon}&multiplier=${mult}`);
+    if (Array.isArray(ingDemands)) state.demandSense.ingredientDemands = ingDemands;
+  } catch (e) {}
+
+  try {
+    const risks = await apiCall(`/api/forecast/stockout-risk?restaurant_id=${restaurantId}&horizon_days=${horizon}&multiplier=${mult}`);
+    if (Array.isArray(risks)) state.demandSense.stockoutRisks = risks;
+  } catch (e) {}
+
+  try {
+    const recs = await apiCall(`/api/forecast/recommendations?restaurant_id=${restaurantId}&horizon_days=${horizon}&multiplier=${mult}`);
+    if (Array.isArray(recs)) state.demandSense.recommendations = recs;
+  } catch (e) {}
+
+  try {
+    const expiry = await apiCall(`/api/forecast/expiry-risk?restaurant_id=${restaurantId}&horizon_days=14&multiplier=${mult}`);
+    if (Array.isArray(expiry)) state.demandSense.expiryRiskReports = expiry;
+  } catch (e) {}
+
+  try {
+    const history = await apiCall(`/api/forecast/history?restaurant_id=${restaurantId}&days=28`);
+    if (Array.isArray(history)) state.demandSense.history = history;
+  } catch (e) {}
+}
+
+async function renderDemandSenseDashboard(container) {
+  state.demandSense.isLoading = true;
+
+  // Background API synchronization
+  syncDemandSenseData().then(() => {
+    state.demandSense.isLoading = false;
+    if (state.activeTab === 'demandsense') {
+      renderDemandSenseContent(container);
+    }
+  }).catch(() => {
+    state.demandSense.isLoading = false;
+    renderDemandSenseContent(container);
+  });
+
+  renderDemandSenseContent(container);
+}
+
+function renderDemandSenseContent(container) {
+  const ds = state.demandSense;
+  const multiplier = ds.demandMultiplier || 1.0;
+  const activeScenario = ds.activeScenario || 'scenario_a';
+
+  // Compute KPI metrics
+  const totalForecastPortions = ds.forecasts.reduce((sum, f) => {
+    return sum + (f.forecast ? f.forecast.reduce((s, p) => s + p.predicted_quantity, 0) : 0);
+  }, 0);
+
+  const criticalRisksCount = ds.stockoutRisks.filter(r => r.stockout_risk_score >= 50.0).length;
+  const imminentStockouts = ds.stockoutRisks.filter(r => r.stockout_predicted && (r.days_until_stockout <= (r.lead_time_days + 1.0))).length;
+
+  const urgentOrdersCount = ds.recommendations.filter(rc => rc.urgency === 'URGENT' || rc.urgency === 'RECOMMENDED').length;
+  const totalOrderQty = ds.recommendations.reduce((sum, rc) => sum + (rc.suggested_order_qty || 0), 0);
+
+  const potentialWasteTotal = ds.expiryRiskReports.reduce((sum, rep) => sum + (rep.potential_waste_quantity || 0), 0);
+
+  container.innerHTML = `
+    <div class="space-y-6">
+      <!-- 1. HERO BRAND & COMMAND HEADER -->
+      <div class="bg-gradient-to-r from-slate-900 via-teal-950 to-slate-900 text-white rounded-2xl p-6 border border-slate-800 shadow-xl relative overflow-hidden">
+        <div class="relative z-10 flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <div class="flex items-center gap-2 mb-1.5">
+              <span class="text-xl">📈</span>
+              <span class="text-xs font-bold tracking-wider uppercase text-teal-400">AnnaKavach — DemandSense AI</span>
+              <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${state.isApiConnected ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40' : 'demo-pill'}">
+                ${state.isApiConnected ? '⚡ Live REST API (/api/forecast)' : 'ℹ️ Demo Mode'}
+              </span>
+              <span class="text-[10px] bg-slate-800 text-slate-300 px-2 py-0.5 rounded-full border border-slate-700">
+                FSSAI Decision-Support System
+              </span>
+            </div>
+            <h2 class="text-xl sm:text-2xl font-black tracking-tight">Predictive Demand & Intelligent Replenishment</h2>
+            <p class="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
+              Explains dish sales forecasts through Day-of-Week statistical profiling, translates recipes into exact raw ingredient demand, computes 0–100 Stockout Risks, and enforces FEFO batch shelf-life safety.
+            </p>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <button onclick="openMethodologyModal()" class="py-2 px-3.5 rounded-xl bg-slate-800/90 hover:bg-slate-700 text-teal-300 hover:text-teal-200 text-xs font-bold transition border border-slate-700 flex items-center gap-1.5 shadow-sm">
+              <span>📐 Algorithm Methodology</span>
+            </button>
+            <button onclick="refreshDemandSenseData()" class="py-2 px-3.5 rounded-xl bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-teal-600/30">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+              <span>Refresh Forecasts</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. DETERMINISTIC DEMO SCENARIOS BAR (A through E) -->
+      <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
+        <div class="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
+          <div>
+            <span class="text-xs font-bold text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+              <span>🎯 Deterministic Demo Scenarios</span>
+              <span class="text-[10px] bg-teal-50 text-teal-800 font-bold px-2 py-0.5 rounded-full border border-teal-200">Reproducible Evaluator</span>
+            </span>
+            <p class="text-[11px] text-slate-500 mt-0.5">Select a real-world restaurant scenario to test DemandSense's risk algorithms and purchasing recommendations.</p>
+          </div>
+          <span class="text-[11px] font-semibold text-slate-600">
+            Active: <strong class="text-teal-800">${ds.scenarioMetadata ? ds.scenarioMetadata.title : 'Baseline Normal'}</strong>
+          </span>
+        </div>
+
+        <!-- Scenario Switcher Buttons -->
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+          <button onclick="handleScenarioSwitch('scenario_a')" class="p-3 rounded-xl border text-left transition flex flex-col justify-between ${activeScenario === 'scenario_a' ? 'scenario-btn-active' : 'bg-slate-50 hover:bg-slate-100 border-slate-200 text-slate-700'}">
+            <div class="font-bold text-xs">Scenario A</div>
+            <div class="text-[11px] font-medium opacity-90 mt-1">Normal Operations</div>
+            <div class="text-[10px] opacity-75 mt-0.5">Healthy stock & buffers</div>
+          </button>
+
+          <button onclick="handleScenarioSwitch('scenario_b')" class="p-3 rounded-xl border text-left transition flex flex-col justify-between ${activeScenario === 'scenario_b' ? 'scenario-btn-active' : 'bg-rose-50/60 hover:bg-rose-100/70 border-rose-200 text-rose-950'}">
+            <div class="font-bold text-xs flex items-center justify-between">
+              <span>Scenario B</span>
+              <span class="text-[9px] bg-rose-500 text-white font-bold px-1 py-0.2 rounded">Surge</span>
+            </div>
+            <div class="text-[11px] font-bold mt-1">Weekend / Festival Rush</div>
+            <div class="text-[10px] opacity-75 mt-0.5">Paneer deficit in 1.9d</div>
+          </button>
+
+          <button onclick="handleScenarioSwitch('scenario_c')" class="p-3 rounded-xl border text-left transition flex flex-col justify-between ${activeScenario === 'scenario_c' ? 'scenario-btn-active' : 'bg-rose-50/60 hover:bg-rose-100/70 border-rose-200 text-rose-950'}">
+            <div class="font-bold text-xs flex items-center justify-between">
+              <span>Scenario C</span>
+              <span class="text-[9px] bg-rose-600 text-white font-bold px-1 py-0.2 rounded">Crit</span>
+            </div>
+            <div class="text-[11px] font-bold mt-1">Critical Stockout Imminent</div>
+            <div class="text-[10px] opacity-75 mt-0.5">Tomatoes run out in &lt;24h</div>
+          </button>
+
+          <button onclick="handleScenarioSwitch('scenario_d')" class="p-3 rounded-xl border text-left transition flex flex-col justify-between ${activeScenario === 'scenario_d' ? 'scenario-btn-active' : 'bg-amber-50/60 hover:bg-amber-100/70 border-amber-200 text-amber-950'}">
+            <div class="font-bold text-xs flex items-center justify-between">
+              <span>Scenario D</span>
+              <span class="text-[9px] bg-amber-500 text-white font-bold px-1 py-0.2 rounded">Delay</span>
+            </div>
+            <div class="text-[11px] font-bold mt-1">Supplier Lead Delay</div>
+            <div class="text-[10px] opacity-75 mt-0.5">Basmati lead time = 6 days</div>
+          </button>
+
+          <button onclick="handleScenarioSwitch('scenario_e')" class="p-3 rounded-xl border text-left transition flex flex-col justify-between ${activeScenario === 'scenario_e' ? 'scenario-btn-active' : 'bg-amber-50/60 hover:bg-amber-100/70 border-amber-200 text-amber-950'}">
+            <div class="font-bold text-xs flex items-center justify-between">
+              <span>Scenario E</span>
+              <span class="text-[9px] bg-amber-600 text-white font-bold px-1 py-0.2 rounded">FEFO</span>
+            </div>
+            <div class="text-[11px] font-bold mt-1">High Spoilage Risk</div>
+            <div class="text-[10px] opacity-75 mt-0.5">Batches expiring in 48-72h</div>
+          </button>
+        </div>
+
+        <!-- Scenario Narrative Card -->
+        ${ds.scenarioMetadata ? `
+          <div class="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs flex items-start gap-3">
+            <span class="text-lg">💡</span>
+            <div class="flex-1">
+              <div class="font-bold text-slate-800">${ds.scenarioMetadata.title}</div>
+              <div class="text-slate-600 mt-0.5">${ds.scenarioMetadata.description}</div>
+              <div class="text-teal-700 font-semibold mt-1">Impact: ${ds.scenarioMetadata.impact}</div>
+            </div>
+          </div>
+        ` : ''}
+
+        <!-- 3. DEMAND SURGE MULTIPLIER SENSITIVITY SLIDER -->
+        <div class="pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-4">
+          <div class="flex items-center gap-3">
+            <span class="text-xs font-bold text-slate-700">Demand Multiplier Sensitivity:</span>
+            <span class="text-xs font-black text-teal-800 bg-teal-50 px-2 py-0.5 rounded-md border border-teal-200 font-mono">${multiplier.toFixed(2)}x</span>
+            <input type="range" id="dsMultiplierSlider" min="0.5" max="2.5" step="0.1" value="${multiplier}" onchange="handleMultiplierChange(this.value)" class="w-36 accent-teal-600 cursor-pointer">
+          </div>
+
+          <div class="flex items-center gap-1.5 text-xs">
+            <span class="text-slate-400 text-[11px]">Quick Presets:</span>
+            <button onclick="handleMultiplierChange(1.0)" class="px-2 py-1 rounded-lg border text-[11px] font-semibold ${multiplier === 1.0 ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}">1.0x Normal</button>
+            <button onclick="handleMultiplierChange(1.3)" class="px-2 py-1 rounded-lg border text-[11px] font-semibold ${multiplier === 1.3 ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}">1.3x Weekend</button>
+            <button onclick="handleMultiplierChange(1.8)" class="px-2 py-1 rounded-lg border text-[11px] font-semibold ${multiplier === 1.8 ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}">1.8x Festival</button>
+            <button onclick="handleMultiplierChange(2.2)" class="px-2 py-1 rounded-lg border text-[11px] font-semibold ${multiplier === 2.2 ? 'bg-teal-600 text-white border-teal-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'}">2.2x Wedding Surge</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. CORE HERO KPI CARDS -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- KPI 1: Projected Dish Sales -->
+        <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-2">
+          <div class="flex items-center justify-between text-slate-500">
+            <span class="text-xs font-bold uppercase tracking-wider">7-Day Projected Sales</span>
+            <span class="text-base">🍲</span>
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span class="text-2xl font-black text-slate-900">${Math.round(totalForecastPortions)}</span>
+            <span class="text-xs text-slate-500 font-semibold">Portions</span>
+          </div>
+          <div class="text-[11px] text-teal-700 font-medium flex items-center gap-1">
+            <span>✓</span>
+            <span>Day-of-Week Seasonality (28d history)</span>
+          </div>
+        </div>
+
+        <!-- KPI 2: Critical Stockout Risks -->
+        <div class="bg-white rounded-2xl border ${criticalRisksCount > 0 ? 'border-rose-200 bg-rose-50/20' : 'border-slate-200'} p-5 shadow-sm space-y-2">
+          <div class="flex items-center justify-between text-slate-500">
+            <span class="text-xs font-bold uppercase tracking-wider">Stockout Risk Alerts</span>
+            <span class="text-base">🚨</span>
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span class="text-2xl font-black ${criticalRisksCount > 0 ? 'text-rose-700' : 'text-slate-900'}">${criticalRisksCount}</span>
+            <span class="text-xs text-slate-500 font-semibold">Ingredients at Risk</span>
+          </div>
+          <div class="text-[11px] ${imminentStockouts > 0 ? 'text-rose-700 font-bold' : 'text-slate-500'}">
+            ${imminentStockouts > 0 ? `⚠️ ${imminentStockouts} item(s) deplete before lead time!` : 'Buffers adequate for operating cycle'}
+          </div>
+        </div>
+
+        <!-- KPI 3: Suggested Purchase Orders -->
+        <div class="bg-white rounded-2xl border ${urgentOrdersCount > 0 ? 'border-amber-200 bg-amber-50/20' : 'border-slate-200'} p-5 shadow-sm space-y-2">
+          <div class="flex items-center justify-between text-slate-500">
+            <span class="text-xs font-bold uppercase tracking-wider">Suggested PO Orders</span>
+            <span class="text-base">📦</span>
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span class="text-2xl font-black text-slate-900">${urgentOrdersCount}</span>
+            <span class="text-xs text-slate-500 font-semibold">Items (${Math.round(totalOrderQty)} units)</span>
+          </div>
+          <div class="text-[11px] text-slate-500">
+            MOQ & Pack Size rounding applied
+          </div>
+        </div>
+
+        <!-- KPI 4: FEFO Spoilage Risk -->
+        <div class="bg-white rounded-2xl border ${potentialWasteTotal > 0 ? 'border-amber-200 bg-amber-50/20' : 'border-slate-200'} p-5 shadow-sm space-y-2">
+          <div class="flex items-center justify-between text-slate-500">
+            <span class="text-xs font-bold uppercase tracking-wider">FEFO Spoilage Radar</span>
+            <span class="text-base">❄️</span>
+          </div>
+          <div class="flex items-baseline gap-2">
+            <span class="text-2xl font-black ${potentialWasteTotal > 0 ? 'text-amber-800' : 'text-slate-900'}">${potentialWasteTotal.toFixed(1)}</span>
+            <span class="text-xs text-slate-500 font-semibold">Units at Waste Risk</span>
+          </div>
+          <div class="text-[11px] text-slate-500 flex items-center gap-1">
+            <span>Linked to Cold-Chain Storage Units</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 5. SECTION A: SALES FORECAST & DAY-OF-WEEK PROFILE -->
+      <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-5">
+        <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
+          <div>
+            <h3 class="font-bold text-slate-900 text-sm flex items-center gap-2">
+              <span>📊 7-Day Dish Sales Projections (Actual vs Empirical Forecast)</span>
+            </h3>
+            <p class="text-xs text-slate-500">Empirical Day-of-Week statistical profiling with rolling holdout validation.</p>
+          </div>
+
+          <div class="flex items-center gap-1.5">
+            <button onclick="filterForecastDish(null)" class="px-2.5 py-1 rounded-lg text-xs font-semibold ${!ds.selectedDishId ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}">All Menu Dishes</button>
+            ${ds.forecasts.map(f => `
+              <button onclick="filterForecastDish(${f.dish_id})" class="px-2.5 py-1 rounded-lg text-xs font-semibold ${ds.selectedDishId === f.dish_id ? 'bg-teal-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}">
+                ${f.dish_name}
+              </button>
+            `).join('')}
+          </div>
+        </div>
+
+        <!-- Forecast Visual Chart & Model Transparency Cards -->
+        <div class="space-y-4">
+          ${(ds.selectedDishId ? ds.forecasts.filter(f => f.dish_id === ds.selectedDishId) : ds.forecasts).map(f => renderDishForecastCard(f)).join('')}
+        </div>
+      </div>
+
+      <!-- 6. SECTION B: INGREDIENT CONSUMPTION & STOCKOUT RISK RADAR -->
+      <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-5">
+        <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
+          <div>
+            <h3 class="font-bold text-slate-900 text-sm flex items-center gap-2">
+              <span>⚠️ Ingredient Stockout Risk Radar (0–100 Explainable Score)</span>
+            </h3>
+            <p class="text-xs text-slate-500">Multi-factor algorithmic scoring: Lead-time urgency (40%), Reorder threshold breach (25%), Depletion ratio (25%), Volatility (10%).</p>
+          </div>
+          <span class="text-xs text-slate-500">
+            Monitoring <strong>${ds.stockoutRisks.length}</strong> raw stock items
+          </span>
+        </div>
+
+        <!-- Stockout Risk Table -->
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs">
+            <thead>
+              <tr class="border-b border-slate-200 text-slate-400 uppercase text-[10px]">
+                <th class="py-2.5 px-3">Ingredient</th>
+                <th class="py-2.5 px-3">Category</th>
+                <th class="py-2.5 px-3">Usable Stock</th>
+                <th class="py-2.5 px-3">7-Day Demand</th>
+                <th class="py-2.5 px-3">Days to Depletion</th>
+                <th class="py-2.5 px-3">Stockout Date</th>
+                <th class="py-2.5 px-3">Lead Time</th>
+                <th class="py-2.5 px-3">Risk Score (0–100)</th>
+                <th class="py-2.5 px-3">Status</th>
+                <th class="py-2.5 px-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100 font-medium">
+              ${ds.stockoutRisks.map(r => renderStockoutRiskRow(r)).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 7. SECTION C: EXPLAINABLE PURCHASING RECOMMENDATIONS & WHAT-IF RECALCULATOR -->
+      <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-5">
+        <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
+          <div>
+            <h3 class="font-bold text-slate-900 text-sm flex items-center gap-2">
+              <span>🛒 Explainable Purchasing Recommendations & Replenishment Math</span>
+            </h3>
+            <p class="text-xs text-slate-500">Formulated with Lead-Time Demand, Safety Buffers, Supplier MOQs, and integer Pack Size roundings.</p>
+          </div>
+          <span class="text-xs font-semibold text-teal-800 bg-teal-50 px-2.5 py-1 rounded-lg border border-teal-200">
+            Interactive What-If Recalculator Active
+          </span>
+        </div>
+
+        <!-- Recommendations Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          ${ds.recommendations.map(rc => renderPurchasingRecommendationCard(rc)).join('')}
+        </div>
+      </div>
+
+      <!-- 8. SECTION D: FEFO BATCH EXPIRY & SPOILAGE RADAR -->
+      <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-5">
+        <div class="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100">
+          <div>
+            <h3 class="font-bold text-slate-900 text-sm flex items-center gap-2">
+              <span>❄️ FEFO Batch Expiry & Cold-Chain Spoilage Radar</span>
+            </h3>
+            <p class="text-xs text-slate-500">First-Expiring-First-Out consumption simulation cross-referenced with cold-chain storage unit telemetry.</p>
+          </div>
+          <span class="text-xs text-slate-500">14-Day Shelf-Life Window</span>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          ${ds.expiryRiskReports.map(rep => renderFefoExpiryCard(rep)).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// -------------------------------------------------------------
+// SUB-RENDERERS FOR COMPONENTS
+// -------------------------------------------------------------
+
+function renderDishForecastCard(f) {
+  const maxQty = Math.max(...f.forecast.map(p => p.predicted_quantity), 1);
+
+  return `
+    <div class="border border-slate-200 rounded-xl p-4 space-y-3 bg-slate-50/40">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <div class="flex items-center gap-2">
+          <span class="font-bold text-slate-900 text-sm">${f.dish_name}</span>
+          <span class="text-[10px] bg-slate-200 text-slate-700 px-2 py-0.5 rounded font-semibold">${f.category}</span>
+          <span class="text-[10px] ${f.confidence_level === 'HIGH' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'} px-2 py-0.5 rounded font-bold">
+            ${f.confidence_level} Confidence
+          </span>
+        </div>
+
+        <div class="text-[11px] text-slate-500">
+          Model: <strong class="text-slate-800">${f.methodology_used}</strong>
+          ${f.metrics && f.metrics.mae !== null ? ` (Holdout MAE: <strong>${f.metrics.mae}</strong>)` : ''}
+        </div>
+      </div>
+
+      <!-- Forecast Bar Chart Visual -->
+      <div class="grid grid-cols-7 gap-2 pt-2">
+        ${f.forecast.map(pt => {
+          const heightPct = Math.round((pt.predicted_quantity / maxQty) * 100);
+          const isWeekend = pt.day_of_week === 'Saturday' || pt.day_of_week === 'Sunday';
+
+          return `
+            <div class="flex flex-col items-center">
+              <span class="text-[11px] font-bold text-slate-800">${pt.predicted_quantity}</span>
+              <div class="w-full bg-slate-200 rounded-lg h-24 flex items-end p-1 my-1">
+                <div class="w-full rounded-md ${isWeekend ? 'bg-teal-600' : 'bg-teal-500'} transition-all" style="height: ${Math.max(10, heightPct)}%;"></div>
+              </div>
+              <span class="text-[10px] font-bold text-slate-700">${pt.day_of_week.slice(0, 3)}</span>
+              <span class="text-[9px] text-slate-400 font-mono">${pt.date.slice(5)}</span>
+              ${isWeekend ? `<span class="text-[8px] text-teal-700 font-bold uppercase mt-0.5">Peak</span>` : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderStockoutRiskRow(r) {
+  let badgeClass = "badge-low";
+  if (r.risk_category === "CRITICAL") badgeClass = "badge-critical";
+  else if (r.risk_category === "HIGH") badgeClass = "badge-high";
+  else if (r.risk_category === "MODERATE") badgeClass = "badge-moderate";
+
+  const isUrgent = r.stockout_before_lead_time;
+
+  return `
+    <tr class="hover:bg-slate-50 ${isUrgent ? 'bg-rose-50/40' : ''}">
+      <td class="py-3 px-3 font-bold text-slate-900">${r.ingredient_name}</td>
+      <td class="py-3 px-3 text-slate-500">${r.category}</td>
+      <td class="py-3 px-3">
+        <span class="font-bold ${r.usable_stock <= r.reorder_level ? 'text-rose-600' : 'text-slate-900'}">${r.usable_stock}</span>
+        <span class="text-[10px] text-slate-400">${r.unit} (Min: ${r.reorder_level})</span>
+      </td>
+      <td class="py-3 px-3 font-semibold text-slate-700">
+        ${(r.usable_stock > 0 ? (r.projected_timeline.reduce((s, p) => s + p.daily_consumption, 0)).toFixed(1) : 0)} ${r.unit}
+      </td>
+      <td class="py-3 px-3">
+        ${r.stockout_predicted ? `
+          <span class="font-bold ${isUrgent ? 'text-rose-600 animate-pulse' : 'text-slate-800'}">
+            ${r.days_until_stockout} days
+          </span>
+        ` : `<span class="text-emerald-700 font-semibold">&gt; 7 days</span>`}
+      </td>
+      <td class="py-3 px-3 font-mono text-[11px] text-slate-600">
+        ${r.estimated_stockout_date ? r.estimated_stockout_date : 'No deficit'}
+      </td>
+      <td class="py-3 px-3 text-slate-600 font-medium">
+        ${r.lead_time_days} days
+      </td>
+      <td class="py-3 px-3">
+        <div class="flex items-center gap-2">
+          <span class="font-black text-xs ${r.stockout_risk_score >= 75 ? 'text-rose-600' : r.stockout_risk_score >= 50 ? 'text-amber-600' : 'text-slate-700'}">${r.stockout_risk_score}</span>
+          <div class="w-16 bg-slate-200 rounded-full h-1.5 overflow-hidden">
+            <div class="h-full ${r.stockout_risk_score >= 75 ? 'bg-rose-500' : r.stockout_risk_score >= 50 ? 'bg-amber-500' : 'bg-emerald-500'}" style="width: ${r.stockout_risk_score}%;"></div>
+          </div>
+        </div>
+      </td>
+      <td class="py-3 px-3">
+        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${badgeClass}">
+          ${r.risk_category}
+        </span>
+        ${isUrgent ? `<span class="block text-[9px] text-rose-700 font-bold mt-0.5">⚠️ Stockout &lt; Lead Time</span>` : ''}
+      </td>
+      <td class="py-3 px-3 text-right">
+        <button onclick="openRiskDetailModal(${r.stock_item_id})" class="py-1 px-2.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-[11px] font-bold transition">
+          Timeline & Factors →
+        </button>
+      </td>
+    </tr>
+  `;
+}
+
+function renderPurchasingRecommendationCard(rc) {
+  let badgeClass = "bg-slate-100 text-slate-600 border-slate-200";
+  if (rc.urgency === "URGENT") badgeClass = "bg-rose-100 text-rose-800 border-rose-300 animate-pulse";
+  else if (rc.urgency === "RECOMMENDED") badgeClass = "bg-amber-100 text-amber-800 border-amber-300";
+  else if (rc.urgency === "OPTIONAL") badgeClass = "bg-blue-100 text-blue-800 border-blue-300";
+
+  return `
+    <div id="recCard_${rc.stock_item_id}" class="border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4 ${rc.urgency === 'URGENT' ? 'bg-rose-50/20 border-rose-200' : 'bg-white'}">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div class="flex items-center gap-2">
+            <h4 class="font-bold text-slate-900 text-sm">${rc.ingredient_name}</h4>
+            <span class="text-[10px] bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-semibold">${rc.category}</span>
+          </div>
+          <div class="text-xs text-slate-500 mt-0.5">
+            On Hand: <strong>${rc.current_usable_stock} ${rc.unit}</strong> | Lead Time: <strong>${rc.lead_time_days}d</strong>
+          </div>
+        </div>
+
+        <span class="px-2.5 py-1 rounded-full text-[10px] font-black border ${badgeClass}">
+          ${rc.urgency}
+        </span>
+      </div>
+
+      <!-- Recommendation Hero Block -->
+      <div class="p-3.5 rounded-xl ${rc.suggested_order_qty > 0 ? 'bg-teal-50/80 border border-teal-200' : 'bg-slate-50 border border-slate-200'} flex items-center justify-between">
+        <div>
+          <span class="text-[10px] uppercase font-bold text-slate-500 tracking-wider">Suggested Reorder</span>
+          <div class="flex items-baseline gap-1.5 mt-0.5">
+            <span class="text-2xl font-black ${rc.suggested_order_qty > 0 ? 'text-teal-900' : 'text-slate-600'}">${rc.suggested_order_qty}</span>
+            <span class="text-xs font-bold text-slate-600">${rc.unit}</span>
+          </div>
+          <span class="text-[10px] text-slate-500">MOQ: ${rc.min_order_qty} ${rc.unit} | Pack Size: ${rc.pack_size} ${rc.unit}</span>
+        </div>
+
+        ${rc.primary_supplier ? `
+          <div class="text-right text-xs">
+            <span class="text-[10px] text-slate-400 font-semibold">Primary Supplier</span>
+            <div class="font-bold text-slate-800">${rc.primary_supplier.name}</div>
+            <div class="text-[10px] text-slate-500">${rc.primary_supplier.phone} (⭐ ${rc.primary_supplier.rating})</div>
+          </div>
+        ` : ''}
+      </div>
+
+      <!-- Plain Language Rationale -->
+      <div class="text-xs text-slate-700 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+        <strong>Decision Rationale:</strong> ${rc.rationale}
+      </div>
+
+      <!-- Step-by-Step Calculation Accordion -->
+      <details class="text-[11px] text-slate-600 border border-slate-100 rounded-xl p-2.5 bg-slate-50/50">
+        <summary class="font-bold text-slate-800 cursor-pointer hover:text-teal-700">View Mathematical Step-by-Step Proof</summary>
+        <div class="space-y-1 mt-2 font-mono text-[10px]">
+          ${rc.calculation_steps.map(step => `<div>• ${step}</div>`).join('')}
+        </div>
+      </details>
+
+      <!-- Inline Live Recalculation Form -->
+      <form onsubmit="handleInlineRecalculate(event, ${rc.stock_item_id})" class="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div class="flex items-center gap-2">
+          <label class="text-[11px] text-slate-500 font-semibold">Lead Time (days):</label>
+          <input type="number" id="recalcLt_${rc.stock_item_id}" step="0.5" min="0.5" max="30" value="${rc.lead_time_days}" class="w-16 p-1 border border-slate-300 rounded-lg text-center font-bold">
+
+          <label class="text-[11px] text-slate-500 font-semibold ml-2">Buffer %:</label>
+          <input type="number" id="recalcBuf_${rc.stock_item_id}" step="5" min="0" max="100" value="${rc.safety_buffer_pct}" class="w-16 p-1 border border-slate-300 rounded-lg text-center font-bold">
+        </div>
+
+        <button type="submit" class="py-1 px-3 rounded-lg bg-teal-600 hover:bg-teal-700 text-white text-[11px] font-bold shadow-sm transition">
+          Recalculate Live
+        </button>
+      </form>
+    </div>
+  `;
+}
+
+function renderFefoExpiryCard(rep) {
+  return `
+    <div class="border border-slate-200 rounded-2xl p-5 shadow-sm space-y-4 bg-white">
+      <div class="flex items-center justify-between">
+        <div>
+          <h4 class="font-bold text-slate-900 text-sm">${rep.ingredient_name}</h4>
+          <span class="text-xs text-slate-500">Usable Inventory: <strong>${rep.total_usable_stock} ${rep.unit}</strong></span>
+        </div>
+        <span class="px-2.5 py-0.5 rounded-full text-[10px] font-bold ${rep.potential_waste_quantity > 0 ? 'bg-amber-100 text-amber-800 border border-amber-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200'}">
+          ${rep.potential_waste_quantity > 0 ? `Waste Risk: ${rep.potential_waste_quantity} ${rep.unit}` : 'Optimal FEFO Schedule'}
+        </span>
+      </div>
+
+      <div class="space-y-2">
+        <span class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">Monitored Batches (FEFO Chronological)</span>
+        <div class="space-y-2 max-h-48 overflow-y-auto">
+          ${rep.batches.map(b => `
+            <div class="p-2.5 rounded-xl border text-xs flex items-center justify-between ${b.status === 'expires_with_leftover' ? 'bg-amber-50 border-amber-200' : b.status === 'expired_on_hand' ? 'bg-rose-50 border-rose-200' : 'bg-slate-50 border-slate-200'}">
+              <div>
+                <div class="font-bold text-slate-900">${b.batch_number} (${b.initial_quantity} ${b.unit})</div>
+                <div class="text-[10px] text-slate-500">Storage: <strong>${b.storage_unit_name}</strong> | Expires: <strong>${b.expiry_date}</strong> (${b.days_until_expiry}d left)</div>
+                ${b.spoilage_risk_alert ? `<div class="text-[10px] text-rose-700 font-bold mt-0.5">⚠️ ${b.spoilage_risk_alert.note}</div>` : ''}
+              </div>
+
+              <div class="text-right">
+                <span class="px-2 py-0.5 rounded text-[10px] font-bold ${b.status === 'expires_with_leftover' ? 'bg-amber-200 text-amber-900' : b.status === 'expired_on_hand' ? 'bg-rose-200 text-rose-900' : 'bg-emerald-200 text-emerald-900'}">
+                  ${b.status}
+                </span>
+                ${b.remaining_quantity > 0 ? `<div class="text-[10px] font-bold text-rose-700 mt-1">${b.remaining_quantity} ${b.unit} leftover</div>` : ''}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Actionable Mitigation Directive -->
+      <div class="p-3 bg-teal-50/60 rounded-xl border border-teal-200 text-xs text-teal-950">
+        <strong>Culinary Recommendation:</strong>
+        <div class="mt-0.5">${rep.mitigation_actions.join(' ')}</div>
+      </div>
+    </div>
+  `;
+}
+
+// -------------------------------------------------------------
+// EVENT HANDLERS & MODAL DIALOGS
+// -------------------------------------------------------------
+
+async function handleScenarioSwitch(scenarioId) {
+  state.demandSense.activeScenario = scenarioId;
+  showToast(`Switching to ${scenarioId.toUpperCase()}...`, "info");
+
+  try {
+    const res = await apiCall(`/api/forecast/scenarios/apply?restaurant_id=1`, {
+      method: "POST",
+      body: JSON.stringify({ scenario_id: scenarioId })
+    });
+    if (res && res.title) {
+      state.demandSense.scenarioMetadata = {
+        title: res.title,
+        description: res.description,
+        impact: res.expected_impact
+      };
+      showToast(`Activated: ${res.title}`, "success");
+    }
+  } catch(e) {
+    console.log("Local scenario applied:", e.message);
+  }
+
+  await syncDemandSenseData();
+  renderDemandSenseContent(document.getElementById("mainViewContent"));
+}
+
+function handleMultiplierChange(val) {
+  state.demandSense.demandMultiplier = parseFloat(val);
+  showToast(`Demand sensitivity adjusted to ${val}x`, "info");
+  syncDemandSenseData().then(() => {
+    renderDemandSenseContent(document.getElementById("mainViewContent"));
+  });
+}
+
+function filterForecastDish(dishId) {
+  state.demandSense.selectedDishId = dishId;
+  renderDemandSenseContent(document.getElementById("mainViewContent"));
+}
+
+function refreshDemandSenseData() {
+  showToast("Synchronizing DemandSense AI with live SQLite backend...", "info");
+  syncDemandSenseData().then(() => {
+    renderDemandSenseContent(document.getElementById("mainViewContent"));
+    showToast("DemandSense Engine Refreshed", "success");
+  });
+}
+
+async function handleInlineRecalculate(e, stockItemId) {
+  e.preventDefault();
+  const lt = parseFloat(document.getElementById(`recalcLt_${stockItemId}`).value);
+  const buf = parseFloat(document.getElementById(`recalcBuf_${stockItemId}`).value);
+  const mult = state.demandSense.demandMultiplier || 1.0;
+
+  try {
+    const updated = await apiCall("/api/forecast/recommendations/recalculate?restaurant_id=1", {
+      method: "POST",
+      body: JSON.stringify({
+        stock_item_id: stockItemId,
+        custom_lead_time_days: lt,
+        custom_safety_buffer_pct: buf,
+        demand_multiplier: mult,
+        target_horizon_days: 7
+      })
+    });
+
+    // Replace card dynamically in state and DOM
+    const idx = state.demandSense.recommendations.findIndex(rc => rc.stock_item_id === stockItemId);
+    if (idx !== -1) {
+      state.demandSense.recommendations[idx] = updated;
+    }
+    const cardEl = document.getElementById(`recCard_${stockItemId}`);
+    if (cardEl) {
+      const parent = cardEl.parentElement;
+      cardEl.outerHTML = renderPurchasingRecommendationCard(updated);
+    }
+    showToast(`Recalculated: Suggested order is now ${updated.suggested_order_qty} ${updated.unit}`, "success");
+  } catch (err) {
+    showToast(`Recalculation error: ${err.message}`, "error");
+  }
+}
+
+function openRiskDetailModal(stockItemId) {
+  const itemRisk = state.demandSense.stockoutRisks.find(r => r.stock_item_id === stockItemId);
+  if (!itemRisk) return;
+
+  const modalTitle = document.getElementById("actionModalTitle");
+  const modalContent = document.getElementById("actionModalContent");
+
+  modalTitle.textContent = `Stockout Risk & Timeline: ${itemRisk.ingredient_name}`;
+  modalContent.innerHTML = `
+    <div class="space-y-4 text-xs">
+      <!-- Factor Breakdown Header -->
+      <div class="p-3.5 bg-slate-50 rounded-xl border border-slate-200">
+        <div class="flex items-center justify-between mb-2">
+          <span class="font-bold text-slate-800 text-sm">Stockout Risk Score: ${itemRisk.stockout_risk_score} / 100</span>
+          <span class="px-2 py-0.5 rounded-full text-[10px] font-bold ${itemRisk.stockout_risk_score >= 75 ? 'badge-critical' : itemRisk.stockout_risk_score >= 50 ? 'badge-high' : 'badge-low'}">
+            ${itemRisk.risk_category}
+          </span>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-medium text-slate-600">
+          <div>Lead Time Urgency: <strong>${itemRisk.factor_breakdown.lead_time_urgency_pts} / 40</strong></div>
+          <div>Reorder Threshold: <strong>${itemRisk.factor_breakdown.reorder_level_breach_pts} / 25</strong></div>
+          <div>7d Depletion Ratio: <strong>${itemRisk.factor_breakdown.depletion_ratio_pts} / 25</strong></div>
+          <div>Surge Volatility: <strong>${itemRisk.factor_breakdown.volatility_surge_pts} / 10</strong></div>
+        </div>
+      </div>
+
+      <div class="text-xs text-slate-700 bg-teal-50 p-3 rounded-xl border border-teal-200">
+        <strong>Algorithmic Warning:</strong> ${itemRisk.narrative_warning}
+      </div>
+
+      <!-- Projected 7-Day Timeline -->
+      <div>
+        <h5 class="font-bold text-slate-800 uppercase tracking-wider text-[11px] mb-2">Daily Projected Inventory Balance Timeline</h5>
+        <div class="overflow-x-auto border border-slate-200 rounded-xl">
+          <table class="w-full text-left">
+            <thead class="bg-slate-100 text-slate-600 uppercase text-[10px]">
+              <tr>
+                <th class="p-2">Date</th>
+                <th class="p-2">Day</th>
+                <th class="p-2">Start Balance</th>
+                <th class="p-2">Consumption</th>
+                <th class="p-2">Incoming Delivery</th>
+                <th class="p-2">Ending Balance</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              ${itemRisk.projected_timeline.map(pt => `
+                <tr class="${pt.is_negative ? 'bg-rose-50 text-rose-900 font-bold' : ''}">
+                  <td class="p-2 font-mono text-[11px]">${pt.date}</td>
+                  <td class="p-2">${pt.day_of_week}</td>
+                  <td class="p-2">${pt.starting_balance} ${itemRisk.unit}</td>
+                  <td class="p-2 text-rose-600">-${pt.daily_consumption} ${itemRisk.unit}</td>
+                  <td class="p-2 text-emerald-600">+${pt.incoming_delivery} ${itemRisk.unit} ${pt.delivery_pos && pt.delivery_pos.length ? `(${pt.delivery_pos.join(', ')})` : ''}</td>
+                  <td class="p-2 font-bold ${pt.ending_balance <= 0 ? 'text-rose-700' : 'text-slate-900'}">${pt.ending_balance} ${itemRisk.unit}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="flex justify-end pt-2">
+        <button onclick="closeActionModal()" class="py-2 px-4 rounded-xl bg-slate-900 text-white text-xs font-bold">Close Details</button>
+      </div>
+    </div>
+  `;
+  openActionModal();
+}
+
+async function openMethodologyModal() {
+  const modalTitle = document.getElementById("actionModalTitle");
+  const modalContent = document.getElementById("actionModalContent");
+
+  modalTitle.textContent = "DemandSense AI — Algorithmic Methodology & Mathematics";
+  modalContent.innerHTML = `
+    <div class="space-y-4 text-xs text-slate-700 max-h-[70vh] overflow-y-auto pr-1">
+      <div class="p-3 bg-teal-50 rounded-xl border border-teal-200">
+        <div class="font-bold text-teal-900 text-sm">FSSAI & AnnaKavach Explainability Guarantee</div>
+        <p class="text-[11px] text-teal-800 mt-1">
+          DemandSense operates strictly as an empirical, explainable decision-support engine. It never outputs opaque "black box" numbers or automated purchase orders without full mathematical derivations.
+        </p>
+      </div>
+
+      <div class="space-y-2">
+        <h5 class="font-bold text-slate-900 text-xs uppercase tracking-wider">1. Four-Tier Forecasting Selection Hierarchy</h5>
+        <div class="space-y-2">
+          <div class="p-3 rounded-xl border border-slate-200 bg-slate-50">
+            <div class="font-bold text-slate-800">Tier 1: Day-of-Week (DOW) Historical Average (High Confidence)</div>
+            <p class="text-[11px] text-slate-600 mt-0.5">Condition: $\\ge 14$ days of continuous records with $\\ge 2$ observations per weekday.</p>
+            <div class="font-mono text-[10px] bg-slate-100 p-1.5 rounded mt-1">Formula: y_dow = (1 / N_dow) * sum(sales_dow) | Verified via 7-day rolling holdout validation (MAE, MAPE, RMSE).</div>
+          </div>
+          <div class="p-3 rounded-xl border border-slate-200 bg-slate-50">
+            <div class="font-bold text-slate-800">Tier 2: 7-Day Simple Moving Average (SMA-7) (Medium Confidence)</div>
+            <p class="text-[11px] text-slate-600 mt-0.5">Condition: Historical records between 4 and 13 days.</p>
+            <div class="font-mono text-[10px] bg-slate-100 p-1.5 rounded mt-1">Formula: y_sma = (1 / k) * sum(sales_t-i)</div>
+          </div>
+          <div class="p-3 rounded-xl border border-slate-200 bg-slate-50">
+            <div class="font-bold text-slate-800">Tier 3: Naive Baseline (Low Confidence)</div>
+            <p class="text-[11px] text-slate-600 mt-0.5">Condition: Historical records between 1 and 3 days. Uncertainty margin: $\\pm 35\\%$.</p>
+          </div>
+          <div class="p-3 rounded-xl border border-slate-200 bg-slate-50">
+            <div class="font-bold text-slate-800">Tier 4: Insufficient History (Warning State)</div>
+            <p class="text-[11px] text-slate-600 mt-0.5">Condition: 0 historical records. Outputs 0.0 with explicit data warning rather than fabricating numbers.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="space-y-2">
+        <h5 class="font-bold text-slate-900 text-xs uppercase tracking-wider">2. Stockout Risk Score Formulation (0 to 100)</h5>
+        <div class="p-3 rounded-xl border border-slate-200 bg-slate-50 space-y-1 font-mono text-[10px]">
+          <div>• Lead Time Urgency (0–40 pts): Stockout before lead time = 40 pts. Graduated if &lt; 2x lead time.</div>
+          <div>• Reorder Threshold Breach (0–25 pts): 25 pts if stockout on hand; 20 pts if usable &le; reorder level.</div>
+          <div>• 7-Day Depletion Ratio (0–25 pts): 25 * min(1.0, Total 7d Demand / Total Available Stock).</div>
+          <div>• Volatility & Multiplier (0–10 pts): Accounts for festive/surge demand adjustments.</div>
+        </div>
+      </div>
+
+      <div class="space-y-2">
+        <h5 class="font-bold text-slate-900 text-xs uppercase tracking-wider">3. Purchasing Recommendation Equations</h5>
+        <div class="p-3 rounded-xl border border-slate-200 bg-slate-50 space-y-1 font-mono text-[10px]">
+          <div>1. Lead-Time Demand (LTD) = Average Daily Demand * Lead Time Days</div>
+          <div>2. Safety Buffer (SB) = LTD * (Safety Buffer Pct / 100)</div>
+          <div>3. Net Shortfall = max(0, LTD + SB - Usable Stock - Incoming Due Before Lead Time)</div>
+          <div>4. Pack Size Rounding = ceil(max(Shortfall, MOQ) / Pack Size) * Pack Size</div>
+        </div>
+      </div>
+
+      <div class="flex justify-end pt-2">
+        <button onclick="closeActionModal()" class="py-2 px-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold">Understood</button>
+      </div>
+    </div>
+  `;
+  openActionModal();
+}
+
+function openActionModal() {
+  const m = document.getElementById("actionModal");
+  if (m) m.classList.remove("hidden");
+}
+
+function closeActionModal() {
+  const m = document.getElementById("actionModal");
+  if (m) m.classList.add("hidden");
 }

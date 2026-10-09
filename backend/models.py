@@ -94,6 +94,11 @@ class Restaurant(Base):
     compliance_documents = relationship("ComplianceDocument", back_populates="restaurant", cascade="all, delete-orphan")
     inspections = relationship("Inspection", back_populates="restaurant", cascade="all, delete-orphan")
     corrective_actions = relationship("CorrectiveAction", back_populates="restaurant", cascade="all, delete-orphan")
+    storage_units = relationship("StorageUnit", back_populates="restaurant", cascade="all, delete-orphan")
+    temperature_alerts = relationship("TemperatureAlert", back_populates="restaurant", cascade="all, delete-orphan")
+    sales_records = relationship("SaleRecord", back_populates="restaurant", cascade="all, delete-orphan")
+    incoming_stock = relationship("IncomingStock", back_populates="restaurant", cascade="all, delete-orphan")
+    inventory_movements = relationship("InventoryMovement", back_populates="restaurant", cascade="all, delete-orphan")
 
 class OfficerProfile(Base):
     __tablename__ = "officer_profiles"
@@ -156,12 +161,14 @@ class MenuDish(Base):
 
     restaurant = relationship("Restaurant", back_populates="dishes")
     ingredients = relationship("Ingredient", back_populates="dish", cascade="all, delete-orphan")
+    sales_records = relationship("SaleRecord", back_populates="dish", cascade="all, delete-orphan")
 
 class Ingredient(Base):
     __tablename__ = "ingredients"
 
     id = Column(Integer, primary_key=True, index=True)
     dish_id = Column(Integer, ForeignKey("menu_dishes.id"), nullable=False)
+    stock_item_id = Column(Integer, ForeignKey("stock_items.id"), nullable=True)
     brand_id = Column(Integer, ForeignKey("brands.id"), nullable=True)
     supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=True)
     name = Column(String(255), nullable=False)
@@ -174,6 +181,7 @@ class Ingredient(Base):
     dish = relationship("MenuDish", back_populates="ingredients")
     brand = relationship("Brand", back_populates="ingredients")
     supplier = relationship("Supplier", back_populates="ingredients")
+    stock_item = relationship("StockItem", back_populates="recipe_ingredients")
 
 # ----------------- 4. Stock, Procurement & Evidence -----------------
 class StockItem(Base):
@@ -186,9 +194,18 @@ class StockItem(Base):
     current_quantity = Column(Float, default=0.0)
     unit = Column(String(50), default="kg")
     reorder_level = Column(Float, default=5.0)
+    lead_time_days = Column(Float, default=2.0)
+    safety_buffer_pct = Column(Float, default=20.0)
+    min_order_qty = Column(Float, default=1.0)
+    pack_size = Column(Float, default=1.0)
+    reserved_quantity = Column(Float, default=0.0)
+    density_g_per_ml = Column(Float, nullable=True)
 
     restaurant = relationship("Restaurant", back_populates="stock_items")
     batches = relationship("StockBatch", back_populates="stock_item", cascade="all, delete-orphan")
+    recipe_ingredients = relationship("Ingredient", back_populates="stock_item")
+    incoming_stock = relationship("IncomingStock", back_populates="stock_item", cascade="all, delete-orphan")
+    inventory_movements = relationship("InventoryMovement", back_populates="stock_item", cascade="all, delete-orphan")
 
 class StockBatch(Base):
     __tablename__ = "stock_batches"
@@ -206,10 +223,12 @@ class StockBatch(Base):
     invoice_file = Column(String(500), nullable=True)
     notes = Column(Text, nullable=True)
     status = Column(String(50), default="fresh") # fresh, expiring_soon, expired
+    storage_unit_id = Column(Integer, ForeignKey("storage_units.id"), nullable=True)
 
     stock_item = relationship("StockItem", back_populates="batches")
     supplier = relationship("Supplier", back_populates="stock_batches")
     evidence = relationship("StockEvidence", back_populates="batch", cascade="all, delete-orphan")
+    storage_unit = relationship("StorageUnit", back_populates="batches")
 
 class StockEvidence(Base):
     __tablename__ = "stock_evidence"
@@ -232,6 +251,57 @@ class StockEvidence(Base):
     review_date = Column(DateTime, nullable=True)
 
     batch = relationship("StockBatch", back_populates="evidence")
+
+# ----------------- 4B. DemandSense Sales & Inbound Models -----------------
+class SaleRecord(Base):
+    __tablename__ = "sale_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
+    dish_id = Column(Integer, ForeignKey("menu_dishes.id"), nullable=False)
+    sale_date = Column(DateTime, nullable=False, index=True)
+    quantity_sold = Column(Integer, nullable=False, default=0)
+    unit_price = Column(Float, nullable=False, default=0.0)
+    total_revenue = Column(Float, nullable=False, default=0.0)
+    channel = Column(String(50), default="dine_in")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    restaurant = relationship("Restaurant", back_populates="sales_records")
+    dish = relationship("MenuDish", back_populates="sales_records")
+
+class IncomingStock(Base):
+    __tablename__ = "incoming_stock"
+
+    id = Column(Integer, primary_key=True, index=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
+    stock_item_id = Column(Integer, ForeignKey("stock_items.id"), nullable=False)
+    supplier_id = Column(Integer, ForeignKey("suppliers.id"), nullable=True)
+    po_reference = Column(String(100), nullable=False)
+    quantity = Column(Float, nullable=False)
+    unit = Column(String(50), default="kg")
+    expected_delivery_date = Column(DateTime, nullable=False, index=True)
+    status = Column(String(50), default="confirmed")
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    restaurant = relationship("Restaurant", back_populates="incoming_stock")
+    stock_item = relationship("StockItem", back_populates="incoming_stock")
+    supplier = relationship("Supplier")
+
+class InventoryMovement(Base):
+    __tablename__ = "inventory_movements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
+    stock_item_id = Column(Integer, ForeignKey("stock_items.id"), nullable=False)
+    movement_type = Column(String(50), nullable=False)
+    quantity = Column(Float, nullable=False)
+    unit = Column(String(50), nullable=False)
+    reference_id = Column(String(100), nullable=True)
+    notes = Column(Text, nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+
+    restaurant = relationship("Restaurant", back_populates="inventory_movements")
+    stock_item = relationship("StockItem", back_populates="inventory_movements")
 
 # ----------------- 5. Hygiene, Cleaning & Agency Records -----------------
 class CleaningArea(Base):
@@ -478,3 +548,63 @@ class AuditLog(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="audit_logs")
+
+# ----------------- 13. Cold Chain Telemetry, Storage Units & Escalations -----------------
+class StorageUnit(Base):
+    __tablename__ = "storage_units"
+
+    id = Column(Integer, primary_key=True, index=True)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
+    name = Column(String(255), nullable=False, index=True)
+    unit_type = Column(String(100), nullable=False) # walk_in_chiller, deep_freezer, prep_refrigerator, display_counter, hot_holding
+    location_area = Column(String(255), default="Main Kitchen Storage")
+    min_temp = Column(Float, default=1.0)
+    max_temp = Column(Float, default=4.0)
+    target_temp = Column(Float, default=2.5)
+    current_temp = Column(Float, default=3.2)
+    current_humidity = Column(Float, default=70.0)
+    status = Column(String(50), default="normal") # normal, warning, critical_breach, offline
+    last_ping = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    restaurant = relationship("Restaurant", back_populates="storage_units")
+    batches = relationship("StockBatch", back_populates="storage_unit")
+    telemetry_logs = relationship("TemperatureLog", back_populates="unit", cascade="all, delete-orphan")
+    alerts = relationship("TemperatureAlert", back_populates="unit", cascade="all, delete-orphan")
+
+class TemperatureLog(Base):
+    __tablename__ = "temperature_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    unit_id = Column(Integer, ForeignKey("storage_units.id"), nullable=False)
+    temperature = Column(Float, nullable=False)
+    humidity = Column(Float, nullable=True)
+    sensor_battery_pct = Column(Float, default=100.0)
+    recorded_at = Column(DateTime, default=datetime.utcnow, index=True)
+    is_breach = Column(Boolean, default=False)
+    is_simulation = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    unit = relationship("StorageUnit", back_populates="telemetry_logs")
+
+class TemperatureAlert(Base):
+    __tablename__ = "temperature_alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    unit_id = Column(Integer, ForeignKey("storage_units.id"), nullable=False)
+    restaurant_id = Column(Integer, ForeignKey("restaurants.id"), nullable=False)
+    breach_temp = Column(Float, nullable=False)
+    threshold_temp = Column(Float, nullable=False)
+    severity = Column(String(50), default="critical") # warning, critical
+    escalation_level = Column(Integer, default=1) # 1=Kitchen, 2=Manager, 3=Officer
+    status = Column(String(50), default="active") # active, acknowledged, resolved, escalated_to_officer
+    narrative = Column(Text, nullable=True)
+    detected_at = Column(DateTime, default=datetime.utcnow)
+    acknowledged_at = Column(DateTime, nullable=True)
+    acknowledged_by = Column(String(255), nullable=True)
+    corrective_action_notes = Column(Text, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+
+    unit = relationship("StorageUnit", back_populates="alerts")
+    restaurant = relationship("Restaurant", back_populates="temperature_alerts")

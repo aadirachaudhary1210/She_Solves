@@ -18,14 +18,22 @@ from models import (
     CleaningLog, CleaningAgencyRecord, PestControlRecord, Employee, StaffTraining,
     ComplianceDocument, Inspection, InspectionViolation, CorrectiveAction,
     Notification, AuditLog, VerificationStatus, DocumentValidity, InspectionStatus,
-    CorrectiveStatus
+    CorrectiveStatus, StorageUnit, TemperatureLog, TemperatureAlert,
+    SaleRecord, IncomingStock, InventoryMovement
 )
 from schemas import (
     LoginRequest, TokenResponse, SecurityPinVerify, SecurityPinResponse,
     MenuDishCreate, StockBatchCreate, CleaningLogSubmit, CleaningAgencyCreate,
     PestControlCreate, EmployeeCreate, StaffTrainingCreate, ComplianceDocumentCreate,
     InspectionCreate, CorrectiveActionCreate, CorrectiveActionResponseSubmit,
-    CorrectiveActionOfficerReview, OfficerEvidenceReview
+    CorrectiveActionOfficerReview, OfficerEvidenceReview,
+    StorageUnitCreate, StorageUnitResponse, TelemetryLogCreate, TelemetryLogResponse,
+    TemperatureAlertResponse, AlertAcknowledgeRequest, SpoilageBatchPrediction,
+    SimulationTriggerRequest,
+    DishForecastResponse, IngredientDemandResponse, StockoutRiskResponse,
+    PurchasingRecommendationResponse, RecommendationRecalculateRequest,
+    ExpiryRiskReportResponse, ScenarioApplyRequest, ScenarioApplyResponse,
+    SaleRecordResponse, IncomingStockResponse
 )
 from auth import (
     verify_password, create_access_token, decode_access_token,
@@ -33,10 +41,27 @@ from auth import (
 )
 from compliance_engine import calculate_restaurant_compliance
 from evidence_verifier import evidence_verifier
+from temperature_service import (
+    evaluate_temperature, calculate_degree_hours_abuse, predict_spoilage_risk,
+    advance_escalation_lifecycle, generate_simulation_stream, STORAGE_STANDARDS
+)
+from migrations import run_demandsense_migrations
+from demandsense_service import (
+    calculate_restaurant_forecasts, calculate_ingredient_demands,
+    calculate_stockout_risks, calculate_purchasing_recommendations,
+    recalculate_single_item_recommendation, evaluate_fefo_expiry_risk,
+    get_dish_historical_sales
+)
+from demandsense_scenarios import apply_scenario
 from seed_data import seed_database
 
-# Create DB tables and seed initial production demo data
+# Create DB tables, run migrations, and seed initial production demo data
 Base.metadata.create_all(bind=engine)
+try:
+    run_demandsense_migrations(engine)
+except Exception as me:
+    print(f"Migration note: {me}")
+
 try:
     seed_database()
 except Exception as e:
@@ -189,6 +214,11 @@ def get_restaurant_dashboard(
         CorrectiveAction.status == CorrectiveStatus.PENDING
     ).count()
 
+    active_cold_chain_breaches = db.query(TemperatureAlert).filter(
+        TemperatureAlert.restaurant_id == rest.id,
+        TemperatureAlert.status.in_(["active", "level_1_kitchen_alert", "level_2_manager_escalated", "level_3_officer_escalated"])
+    ).count()
+
     compliance = calculate_restaurant_compliance(
         hygiene_completion_rate=95.0,
         expired_stock_count=expired_stock,
@@ -199,7 +229,8 @@ def get_restaurant_dashboard(
         pest_control_frequency_days=30,
         certified_staff_ratio=staff_ratio,
         pending_corrective_actions=pending_corrective,
-        overdue_corrective_actions=0
+        overdue_corrective_actions=0,
+        active_cold_chain_breaches=active_cold_chain_breaches
     )
 
     # Update restaurant score in database
@@ -1134,6 +1165,760 @@ def get_alerts(current_user: User = Depends(get_current_user), db: Session = Dep
     """Fetch active alert notifications."""
     notifs = db.query(Notification).filter(Notification.user_id == current_user.id).order_by(Notification.created_at.desc()).all()
     return notifs
+
+# -------------------------------------------------------------
+# 12. CHALLENGE 2: COLD-CHAIN TELEMETRY, SPOILAGE PREDICTION & ESCALATION
+# -------------------------------------------------------------
+
+@app.get("/api/temperature/units", response_model=List[StorageUnitResponse])
+def get_storage_units(
+    restaurant_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """List all temperature-controlled storage units with real-time status and telemetry."""
+    if current_user.role == UserRole.RESTAURANT:
+        rest = db.query(Restaurant).filter(Restaurant.owner_id == current_user.id).first()
+        target_rest_id = rest.id if rest else None
+    else:
+        target_rest_id = restaurant_id
+
+    query = db.query(StorageUnit)
+    if target_rest_id:
+        query = query.filter(StorageUnit.restaurant_id == target_rest_id)
+    units = query.all()
+
+    results = []
+    for u in units:
+        active_breaches = db.query(TemperatureAlert).filter(
+            TemperatureAlert.unit_id == u.id,
+            TemperatureAlert.status.in_(["active", "level_1_kitchen_alert", "level_2_manager_escalated", "level_3_officer_escalated"])
+        ).count()
+        linked_batches = db.query(StockBatch).filter(StockBatch.storage_unit_id == u.id).count()
+
+        results.append({
+            "id": u.id,
+            "restaurant_id": u.restaurant_id,
+            "name": u.name,
+            "unit_type": u.unit_type,
+            "location_area": u.location_area,
+            "min_temp": u.min_temp,
+            "max_temp": u.max_temp,
+            "target_temp": u.target_temp,
+            "current_temp": u.current_temp,
+            "current_humidity": u.current_humidity,
+            "status": u.status,
+            "last_ping": u.last_ping.strftime("%Y-%m-%d %H:%M:%S UTC") if u.last_ping else datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "active_breaches_count": active_breaches,
+            "linked_batches_count": linked_batches
+        })
+    return results
+
+@app.post("/api/temperature/units", response_model=StorageUnitResponse)
+def create_storage_unit(
+    unit_in: StorageUnitCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Register a new monitored refrigeration or cold-chain storage unit."""
+    rest = db.query(Restaurant).filter(Restaurant.owner_id == current_user.id).first()
+    if not rest:
+        rest = db.query(Restaurant).first()
+        if not rest:
+            raise HTTPException(status_code=400, detail="No registered restaurant found")
+
+    std = STORAGE_STANDARDS.get(unit_in.unit_type, STORAGE_STANDARDS["walk_in_chiller"])
+    min_t = unit_in.min_temp if unit_in.min_temp is not None else std["min_temp"]
+    max_t = unit_in.max_temp if unit_in.max_temp is not None else std["max_temp"]
+    target_t = unit_in.target_temp if unit_in.target_temp is not None else std["target_temp"]
+
+    new_unit = StorageUnit(
+        restaurant_id=rest.id,
+        name=unit_in.name,
+        unit_type=unit_in.unit_type,
+        location_area=unit_in.location_area or "Kitchen Operations",
+        min_temp=min_t,
+        max_temp=max_t,
+        target_temp=target_t,
+        current_temp=target_t,
+        current_humidity=std["target_humidity"],
+        status="normal",
+        last_ping=datetime.utcnow()
+    )
+    db.add(new_unit)
+    db.commit()
+    db.refresh(new_unit)
+
+    log_audit(db, current_user, "STORAGE_UNIT_CREATED", "StorageUnit", new_unit.id, f"Registered new unit {new_unit.name} ({new_unit.unit_type}).", rest.id)
+
+    return {
+        "id": new_unit.id,
+        "restaurant_id": new_unit.restaurant_id,
+        "name": new_unit.name,
+        "unit_type": new_unit.unit_type,
+        "location_area": new_unit.location_area,
+        "min_temp": new_unit.min_temp,
+        "max_temp": new_unit.max_temp,
+        "target_temp": new_unit.target_temp,
+        "current_temp": new_unit.current_temp,
+        "current_humidity": new_unit.current_humidity,
+        "status": new_unit.status,
+        "last_ping": new_unit.last_ping.strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "active_breaches_count": 0,
+        "linked_batches_count": 0
+    }
+
+@app.post("/api/temperature/telemetry")
+def ingest_temperature_telemetry(
+    log_in: TelemetryLogCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Ingest live/simulated sensor telemetry point, evaluate against statutory safe thresholds,
+    trigger automated food-safety alerts, and advance the escalation lifecycle if breached.
+    """
+    unit = db.query(StorageUnit).filter(StorageUnit.id == log_in.unit_id).first()
+    if not unit:
+        raise HTTPException(status_code=404, detail=f"Storage unit with id {log_in.unit_id} not found")
+
+    is_hot = (unit.unit_type == "hot_holding")
+    status_eval, is_breach, narrative = evaluate_temperature(unit.min_temp, unit.max_temp, log_in.temperature, is_hot_holding=is_hot)
+
+    # Update unit real-time state
+    unit.current_temp = log_in.temperature
+    if log_in.humidity is not None:
+        unit.current_humidity = log_in.humidity
+    unit.status = status_eval
+    unit.last_ping = log_in.recorded_at or datetime.utcnow()
+
+    # Log telemetry entry
+    t_log = TemperatureLog(
+        unit_id=unit.id,
+        temperature=log_in.temperature,
+        humidity=log_in.humidity,
+        sensor_battery_pct=log_in.sensor_battery_pct or 100.0,
+        recorded_at=log_in.recorded_at or datetime.utcnow(),
+        is_breach=is_breach,
+        is_simulation=log_in.is_simulation
+    )
+    db.add(t_log)
+
+    alert_created = None
+    if is_breach:
+        existing_alert = db.query(TemperatureAlert).filter(
+            TemperatureAlert.unit_id == unit.id,
+            TemperatureAlert.status.in_(["active", "level_1_kitchen_alert", "level_2_manager_escalated", "level_3_officer_escalated"])
+        ).first()
+
+        if existing_alert:
+            esc_level, status_label, notif_channel = advance_escalation_lifecycle(
+                existing_alert.detected_at,
+                log_in.temperature,
+                unit.max_temp,
+                is_acknowledged=False
+            )
+            existing_alert.escalation_level = esc_level
+            existing_alert.status = status_label
+            existing_alert.breach_temp = log_in.temperature
+            alert_created = existing_alert.id
+        else:
+            new_alert = TemperatureAlert(
+                unit_id=unit.id,
+                restaurant_id=unit.restaurant_id,
+                breach_temp=log_in.temperature,
+                threshold_temp=unit.max_temp if not is_hot else unit.min_temp,
+                severity="critical" if abs(log_in.temperature - unit.max_temp) >= 3.0 else "warning",
+                escalation_level=1,
+                status="level_1_kitchen_alert",
+                narrative=narrative,
+                detected_at=datetime.utcnow()
+            )
+            db.add(new_alert)
+            db.flush()
+            alert_created = new_alert.id
+
+            notif = Notification(
+                user_id=current_user.id,
+                restaurant_id=unit.restaurant_id,
+                title=f"🚨 Critical Cold-Chain Excursion: {unit.name}",
+                message=f"Current temperature {log_in.temperature:.1f}°C breached safe limit ({unit.max_temp:.1f}°C). Action required within 60 mins.",
+                category="temperature_breach",
+                priority="high"
+            )
+            db.add(notif)
+            log_audit(db, current_user, "TEMPERATURE_BREACH_DETECTED", "TemperatureAlert", new_alert.id, narrative, unit.restaurant_id)
+
+    db.commit()
+
+    return {
+        "success": True,
+        "unit_id": unit.id,
+        "recorded_temp": log_in.temperature,
+        "status": status_eval,
+        "is_breach": is_breach,
+        "narrative": narrative,
+        "alert_id": alert_created,
+        "is_simulation": log_in.is_simulation
+    }
+
+@app.get("/api/temperature/telemetry/{unit_id}")
+def get_unit_telemetry_history(
+    unit_id: int,
+    limit: int = 30,
+    db: Session = Depends(get_db)
+):
+    """Retrieve time-series readings for graphing and trend inspection."""
+    unit = db.query(StorageUnit).filter(StorageUnit.id == unit_id).first()
+    if not unit:
+        raise HTTPException(status_code=404, detail="Storage unit not found")
+
+    logs = db.query(TemperatureLog).filter(
+        TemperatureLog.unit_id == unit_id
+    ).order_by(TemperatureLog.recorded_at.desc()).limit(limit).all()
+
+    return {
+        "unit_id": unit.id,
+        "unit_name": unit.name,
+        "min_temp": unit.min_temp,
+        "max_temp": unit.max_temp,
+        "target_temp": unit.target_temp,
+        "readings": [
+            {
+                "id": l.id,
+                "temperature": l.temperature,
+                "humidity": l.humidity,
+                "recorded_at": l.recorded_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
+                "is_breach": l.is_breach,
+                "is_simulation": l.is_simulation
+            }
+            for l in reversed(logs)
+        ]
+    }
+
+@app.get("/api/temperature/alerts", response_model=List[TemperatureAlertResponse])
+def get_temperature_alerts(
+    unit_id: Optional[int] = None,
+    restaurant_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Fetch active and historical cold-chain breach incidents and escalation status."""
+    query = db.query(TemperatureAlert).join(StorageUnit)
+    if current_user.role == UserRole.RESTAURANT:
+        rest = db.query(Restaurant).filter(Restaurant.owner_id == current_user.id).first()
+        if rest:
+            query = query.filter(TemperatureAlert.restaurant_id == rest.id)
+    elif restaurant_id:
+        query = query.filter(TemperatureAlert.restaurant_id == restaurant_id)
+
+    if unit_id:
+        query = query.filter(TemperatureAlert.unit_id == unit_id)
+
+    alerts = query.order_by(TemperatureAlert.detected_at.desc()).limit(50).all()
+
+    results = []
+    for a in alerts:
+        results.append({
+            "id": a.id,
+            "unit_id": a.unit_id,
+            "unit_name": a.unit.name if a.unit else "Unknown Unit",
+            "restaurant_id": a.restaurant_id,
+            "breach_temp": a.breach_temp,
+            "threshold_temp": a.threshold_temp,
+            "severity": a.severity,
+            "escalation_level": a.escalation_level,
+            "status": a.status,
+            "narrative": a.narrative,
+            "detected_at": a.detected_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "acknowledged_at": a.acknowledged_at.strftime("%Y-%m-%d %H:%M:%S UTC") if a.acknowledged_at else None,
+            "acknowledged_by": a.acknowledged_by,
+            "corrective_action_notes": a.corrective_action_notes
+        })
+    return results
+
+@app.post("/api/temperature/alerts/{alert_id}/acknowledge")
+def acknowledge_temperature_alert(
+    alert_id: int,
+    req: AlertAcknowledgeRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Staff acknowledgment of cold-chain breach with immediate corrective action notes.
+    Halts escalation cycle, resolves active status, and logs immutable audit trail.
+    """
+    alert = db.query(TemperatureAlert).filter(TemperatureAlert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(status_code=404, detail="Temperature alert record not found")
+
+    alert.status = "resolved"
+    alert.acknowledged_at = datetime.utcnow()
+    alert.acknowledged_by = req.actor_name or current_user.full_name
+    alert.corrective_action_notes = req.action_notes
+    alert.resolved_at = datetime.utcnow()
+
+    unit = db.query(StorageUnit).filter(StorageUnit.id == alert.unit_id).first()
+    if unit and unit.status == "critical_breach":
+        unit.status = "warning"
+
+    log_audit(db, current_user, "TEMPERATURE_BREACH_ACKNOWLEDGED", "TemperatureAlert", alert.id, f"Resolved with corrective action: {req.action_notes}", alert.restaurant_id)
+    db.commit()
+
+    return {
+        "success": True,
+        "alert_id": alert.id,
+        "status": "resolved",
+        "acknowledged_by": alert.acknowledged_by,
+        "notes": alert.corrective_action_notes
+    }
+
+@app.get("/api/temperature/spoilage-risk", response_model=List[SpoilageBatchPrediction])
+def get_predictive_spoilage_risk(
+    restaurant_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Predictive Spoilage Risk Engine:
+    Calculates cumulative degree-hour thermal abuse across all batches stored in
+    refrigeration units, projecting accelerated microbial decay, remaining safe hours,
+    and recommended food-safety corrective action.
+    """
+    if current_user.role == UserRole.RESTAURANT:
+        rest = db.query(Restaurant).filter(Restaurant.owner_id == current_user.id).first()
+        target_rest_id = rest.id if rest else None
+    else:
+        target_rest_id = restaurant_id or (db.query(Restaurant).first().id if db.query(Restaurant).first() else None)
+
+    query = db.query(StockBatch).join(StockItem)
+    if target_rest_id:
+        query = query.filter(StockItem.restaurant_id == target_rest_id)
+    batches = query.all()
+
+    predictions = []
+    for b in batches:
+        unit = b.storage_unit
+        if not unit:
+            cat = (b.stock_item.category or "").lower()
+            if "dairy" in cat or "milk" in cat or "paneer" in cat:
+                unit = db.query(StorageUnit).filter(StorageUnit.unit_type == "walk_in_chiller").first()
+            elif "meat" in cat or "seafood" in cat:
+                unit = db.query(StorageUnit).filter(StorageUnit.unit_type == "deep_freezer").first()
+            else:
+                unit = db.query(StorageUnit).first()
+
+        current_temp = unit.current_temp if unit else 4.0
+        max_safe_temp = unit.max_temp if unit else 4.0
+        unit_name = unit.name if unit else "General Storage"
+
+        logs = []
+        if unit:
+            raw_logs = db.query(TemperatureLog).filter(
+                TemperatureLog.unit_id == unit.id,
+                TemperatureLog.recorded_at >= (datetime.utcnow() - timedelta(hours=24))
+            ).order_by(TemperatureLog.recorded_at.asc()).all()
+            logs = [{"temperature": l.temperature, "recorded_at": l.recorded_at} for l in raw_logs]
+
+        degree_hours = calculate_degree_hours_abuse(logs, max_safe_temp) if logs else (
+            max(0.0, current_temp - max_safe_temp) * 2.0
+        )
+
+        analysis = predict_spoilage_risk(
+            batch_number=b.batch_number,
+            item_name=b.stock_item.name,
+            category=b.stock_item.category,
+            nominal_expiry=b.expiry_date,
+            current_unit_temp=current_temp,
+            max_safe_temp=max_safe_temp,
+            cumulative_degree_hours=degree_hours
+        )
+
+        predictions.append({
+            "batch_id": b.id,
+            "batch_number": b.batch_number,
+            "item_name": b.stock_item.name,
+            "category": b.stock_item.category,
+            "current_unit_name": unit_name,
+            "current_temp": analysis["current_temp"],
+            "max_safe_temp": analysis["max_safe_temp"],
+            "nominal_expiry": analysis["nominal_expiry"],
+            "cumulative_degree_hours": analysis["cumulative_degree_hours"],
+            "degradation_pct": analysis["degradation_pct"],
+            "predicted_safe_hours_remaining": analysis["predicted_safe_hours_remaining"],
+            "risk_level": analysis["risk_level"],
+            "badge_class": analysis["badge_class"],
+            "recommended_action": analysis["recommended_action"]
+        })
+
+    return predictions
+
+@app.post("/api/temperature/simulate")
+def trigger_sensor_simulation(
+    req: SimulationTriggerRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Simulation Control Endpoint for Hackathon Judges & Demonstration:
+    Generates synthetic sensor telemetry for a specified scenario (normal, door_ajar, compressor_failure, restoration).
+    Explicitly marks all records with is_simulation=True for documentary integrity.
+    """
+    unit = db.query(StorageUnit).filter(StorageUnit.id == req.unit_id).first()
+    if not unit:
+        raise HTTPException(status_code=404, detail="Storage unit not found")
+
+    stream = generate_simulation_stream(
+        unit_name=unit.name,
+        unit_type=unit.unit_type,
+        scenario=req.scenario,
+        count=req.readings_count
+    )
+
+    created_logs = 0
+    latest_reading = None
+    for item in stream:
+        log_entry = TemperatureLog(
+            unit_id=unit.id,
+            temperature=item["temperature"],
+            humidity=item["humidity"],
+            sensor_battery_pct=98.0,
+            recorded_at=item["recorded_at"],
+            is_breach=item["is_breach"],
+            is_simulation=True
+        )
+        db.add(log_entry)
+        created_logs += 1
+        latest_reading = item
+
+    if latest_reading:
+        unit.current_temp = latest_reading["temperature"]
+        unit.current_humidity = latest_reading["humidity"]
+        unit.status = latest_reading["status"]
+        unit.last_ping = latest_reading["recorded_at"]
+
+        if latest_reading["is_breach"]:
+            new_alert = TemperatureAlert(
+                unit_id=unit.id,
+                restaurant_id=unit.restaurant_id,
+                breach_temp=latest_reading["temperature"],
+                threshold_temp=unit.max_temp,
+                severity="critical" if (latest_reading["temperature"] - unit.max_temp) >= 3.0 else "warning",
+                escalation_level=2 if req.scenario == "compressor_failure" else 1,
+                status="level_2_manager_escalated" if req.scenario == "compressor_failure" else "active",
+                narrative=f"[Simulated Excursion] {latest_reading['narrative']}",
+                detected_at=datetime.utcnow()
+            )
+            db.add(new_alert)
+
+    db.commit()
+    return {
+        "success": True,
+        "unit_id": unit.id,
+        "scenario": req.scenario,
+        "readings_generated": created_logs,
+        "current_temp": unit.current_temp,
+        "current_status": unit.status,
+        "label": "[Simulated Hardware Stream — Proof of Concept Demonstration]"
+    }
+
+@app.get("/api/officer/cold-chain-excursions")
+def get_officer_cold_chain_excursions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Government Food-Safety Officer Command Center:
+    Aggregated view of establishments with Level 2 / Level 3 escalated cold-chain excursions
+    requiring statutory follow-up or on-site spot inspection.
+    """
+    escalated_alerts = db.query(TemperatureAlert).filter(
+        TemperatureAlert.escalation_level >= 2,
+        TemperatureAlert.status != "resolved"
+    ).order_by(TemperatureAlert.escalation_level.desc(), TemperatureAlert.detected_at.desc()).all()
+
+    results = []
+    for a in escalated_alerts:
+        rest = db.query(Restaurant).filter(Restaurant.id == a.restaurant_id).first()
+        results.append({
+            "alert_id": a.id,
+            "restaurant_id": a.restaurant_id,
+            "restaurant_name": rest.name if rest else "Unknown Establishment",
+            "registration_number": rest.registration_number if rest else "N/A",
+            "unit_name": a.unit.name if a.unit else "Unknown Unit",
+            "unit_type": a.unit.unit_type if a.unit else "unknown",
+            "breach_temp": a.breach_temp,
+            "threshold_temp": a.threshold_temp,
+            "escalation_level": a.escalation_level,
+            "status": a.status,
+            "detected_at": a.detected_at.strftime("%Y-%m-%d %H:%M:%S UTC"),
+            "narrative": a.narrative
+        })
+    return results
+
+# =============================================================
+# 15. DEMANDSENSE — AI DEMAND FORECASTING & REPLENISHMENT APIS
+# =============================================================
+
+@app.get("/api/forecast/history")
+def get_sales_history(
+    restaurant_id: int = Query(1),
+    dish_id: Optional[int] = Query(None),
+    days: int = Query(28, ge=1, le=90),
+    db: Session = Depends(get_db)
+):
+    """
+    Returns historical daily sales records for dishes within the specified lookback window.
+    """
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    query = db.query(SaleRecord).filter(
+        SaleRecord.restaurant_id == restaurant_id,
+        SaleRecord.sale_date >= cutoff
+    )
+    if dish_id:
+        query = query.filter(SaleRecord.dish_id == dish_id)
+
+
+    records = query.order_by(SaleRecord.sale_date.asc()).all()
+    results = []
+    for r in records:
+        results.append({
+            "id": r.id,
+            "dish_id": r.dish_id,
+            "dish_name": r.dish.name if r.dish else "Unknown Dish",
+            "sale_date": r.sale_date.strftime("%Y-%m-%d"),
+            "day_of_week": r.sale_date.strftime("%A"),
+            "quantity_sold": r.quantity_sold,
+            "unit_price": r.unit_price,
+            "total_revenue": r.total_revenue,
+            "channel": r.channel
+        })
+    return results
+
+
+@app.get("/api/forecast/sales")
+def get_sales_forecast(
+    restaurant_id: int = Query(1),
+    dish_id: Optional[int] = Query(None),
+    horizon_days: int = Query(7, ge=1, le=30),
+    multiplier: float = Query(1.0, ge=0.1, le=5.0),
+    db: Session = Depends(get_db)
+):
+    """
+    Generates explainable dish-level sales forecasts using Day-of-Week profiling or Moving Averages.
+    """
+    forecasts = calculate_restaurant_forecasts(
+        db, restaurant_id, horizon_days=horizon_days, demand_multiplier=multiplier
+    )
+    if dish_id:
+        filtered = [f for f in forecasts if f["dish_id"] == dish_id]
+        if not filtered:
+            raise HTTPException(status_code=404, detail=f"Dish ID {dish_id} not found or inactive")
+        return filtered[0]
+    return forecasts
+
+
+@app.get("/api/forecast/ingredients")
+def get_ingredient_demand(
+    restaurant_id: int = Query(1),
+    horizon_days: int = Query(7, ge=1, le=30),
+    multiplier: float = Query(1.0, ge=0.1, le=5.0),
+    db: Session = Depends(get_db)
+):
+    """
+    Translates forecasted dish sales into aggregate raw ingredient consumption requirements.
+    """
+    return calculate_ingredient_demands(
+        db, restaurant_id, horizon_days=horizon_days, demand_multiplier=multiplier
+    )
+
+
+@app.get("/api/forecast/stockout-risk")
+def get_stockout_risks(
+    restaurant_id: int = Query(1),
+    horizon_days: int = Query(7, ge=1, le=30),
+    multiplier: float = Query(1.0, ge=0.1, le=5.0),
+    db: Session = Depends(get_db)
+):
+    """
+    Evaluates daily projected inventory balance and assigns explainable 0-100 Stockout Risk Scores.
+    """
+    return calculate_stockout_risks(
+        db, restaurant_id, horizon_days=horizon_days, demand_multiplier=multiplier
+    )
+
+
+@app.get("/api/forecast/recommendations")
+def get_purchasing_recommendations(
+    restaurant_id: int = Query(1),
+    horizon_days: int = Query(7, ge=1, le=30),
+    multiplier: float = Query(1.0, ge=0.1, le=5.0),
+    db: Session = Depends(get_db)
+):
+    """
+    Generates explainable purchasing recommendations with lead-time demand, safety buffer,
+    MOQ enforcement, and pack-size rounding.
+    """
+    return calculate_purchasing_recommendations(
+        db, restaurant_id, horizon_days=horizon_days, demand_multiplier=multiplier
+    )
+
+
+@app.post("/api/forecast/recommendations/recalculate")
+def recalculate_recommendation(
+    req: RecommendationRecalculateRequest,
+    restaurant_id: int = Query(1),
+    db: Session = Depends(get_db)
+):
+    """
+    Live recalculation of purchasing recommendation with custom user parameters (lead time, buffer, multiplier).
+    """
+    try:
+        return recalculate_single_item_recommendation(
+            db=db,
+            restaurant_id=restaurant_id,
+            stock_item_id=req.stock_item_id,
+            custom_lead_time_days=req.custom_lead_time_days,
+            custom_safety_buffer_pct=req.custom_safety_buffer_pct,
+            demand_multiplier=req.demand_multiplier or 1.0,
+            target_horizon_days=req.target_horizon_days or 7
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/forecast/expiry-risk")
+def get_expiry_risk(
+    restaurant_id: int = Query(1),
+    horizon_days: int = Query(14, ge=1, le=60),
+    multiplier: float = Query(1.0, ge=0.1, le=5.0),
+    db: Session = Depends(get_db)
+):
+    """
+    Evaluates batch expiration risks using First-Expiring-First-Out (FEFO) consumption modeling
+    and cross-checks cold-chain storage unit telemetry.
+    """
+    return evaluate_fefo_expiry_risk(
+        db, restaurant_id, horizon_days=horizon_days, demand_multiplier=multiplier
+    )
+
+
+@app.get("/api/forecast/methodology")
+def get_methodology_documentation():
+    """
+    Transparent documentation of algorithms, selection hierarchies, error metrics,
+    and decision rules powering DemandSense.
+    """
+    return {
+        "title": "FoodShield DemandSense AI — Methodology & Specification",
+        "version": "2.0.0",
+        "forecasting_hierarchy": [
+            {
+                "tier": 1,
+                "model": "Day-of-Week (DOW) Historical Average",
+                "condition": "Historical records >= 14 days AND >= 2 observations per weekday",
+                "formula": "y_dow = (1 / N_dow) * sum(sales_dow)",
+                "confidence": "HIGH",
+                "validation": "7-day rolling holdout validation (MAE, MAPE, RMSE)"
+            },
+            {
+                "tier": 2,
+                "model": "7-Day Simple Moving Average (SMA-7)",
+                "condition": "Historical records between 4 and 13 days",
+                "formula": "y_sma = (1 / k) * sum(sales_t-i)",
+                "confidence": "MEDIUM",
+                "validation": "Preliminary rolling average"
+            },
+            {
+                "tier": 3,
+                "model": "Naive Baseline (Recent Average)",
+                "condition": "Historical records between 1 and 3 days",
+                "formula": "y_naive = mean(available_sales)",
+                "confidence": "LOW",
+                "validation": "High uncertainty interval (±35%)"
+            },
+            {
+                "tier": 4,
+                "model": "Insufficient History Warning",
+                "condition": "0 historical records available",
+                "formula": "y = 0.0 with explicit warning",
+                "confidence": "INSUFFICIENT",
+                "validation": "Empirical model unavailable"
+            }
+        ],
+        "stockout_risk_score_factors": {
+            "scale": "0 to 100 Risk Score",
+            "weights": {
+                "lead_time_urgency": "Up to 40 points (Maximum penalty if stockout occurs within lead time)",
+                "reorder_level_breach": "Up to 25 points (Graduated penalty as usable stock drops below threshold)",
+                "depletion_ratio": "Up to 25 points (Total 7-day projected demand vs total available stock)",
+                "volatility_multiplier": "Up to 10 points (Surge demand volatility adjustment)"
+            },
+            "risk_categories": {
+                "CRITICAL": "75.0 - 100.0 (Immediate stockout before or at lead time)",
+                "HIGH": "50.0 - 74.9 (Stockout anticipated within horizon or severe breach)",
+                "MODERATE": "25.0 - 49.9 (Approaching reorder threshold)",
+                "LOW": "0.0 - 24.9 (Adequate inventory buffer)"
+            }
+        },
+        "purchasing_recommendation_math": {
+            "lead_time_demand": "LTD = Average Daily Demand * Lead Time Days",
+            "safety_buffer": "SB = LTD * (Safety Buffer Pct / 100)",
+            "net_shortfall": "max(0, LTD + SB - Usable Stock - Incoming Due Before Lead Time)",
+            "order_quantity_rounding": "Enforces Minimum Order Quantity (MOQ) and ceiling to nearest Pack Size"
+        },
+        "fefo_expiry_logic": {
+            "principle": "First-Expiring-First-Out (FEFO) chronological allocation of projected demand",
+            "cold_chain_interlock": "Active cold-chain storage unit breaches accelerate spoilage alert"
+        }
+    }
+
+
+@app.get("/api/forecast/health")
+def get_demandsense_health(db: Session = Depends(get_db)):
+    """
+    System status and telemetry health check for DemandSense subsystems.
+    """
+    total_dishes = db.query(MenuDish).count()
+    total_stock_items = db.query(StockItem).count()
+    total_sales = db.query(SaleRecord).count()
+    total_incoming = db.query(IncomingStock).count()
+    total_batches = db.query(StockBatch).count()
+
+    return {
+        "status": "healthy",
+        "engine": "DemandSense AI v2.0",
+        "data_readiness": {
+            "total_dishes": total_dishes,
+            "total_stock_items": total_stock_items,
+            "historical_sale_records": total_sales,
+            "confirmed_incoming_pos": total_incoming,
+            "tracked_inventory_batches": total_batches
+        },
+        "available_scenarios": [
+            {"id": "scenario_a", "name": "Scenario A: Baseline Normal Operations"},
+            {"id": "scenario_b", "name": "Scenario B: Weekend Rush / Festival Surge"},
+            {"id": "scenario_c", "name": "Scenario C: Critical Stockout Imminent"},
+            {"id": "scenario_d", "name": "Scenario D: Supplier Lead-Time Delay"},
+            {"id": "scenario_e", "name": "Scenario E: High Spoilage Risk (FEFO Alert)"}
+        ]
+    }
+
+
+@app.post("/api/forecast/scenarios/apply", response_model=ScenarioApplyResponse)
+def apply_demo_scenario(
+    req: ScenarioApplyRequest,
+    restaurant_id: int = Query(1),
+    db: Session = Depends(get_db)
+):
+    """
+    Applies deterministic demo scenario states (A through E) for testing and demonstrations.
+    """
+    try:
+        result = apply_scenario(db, scenario_id=req.scenario_id, restaurant_id=restaurant_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

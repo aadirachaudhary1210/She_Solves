@@ -203,3 +203,266 @@ class ComplianceBreakdown(BaseModel):
     pending_actions_count: int
     expiring_docs_count: int
     missed_checklists_count: int
+
+# ----------------- Cold-Chain Telemetry & Storage Schemas (Challenge 2) -----------------
+class StorageUnitCreate(BaseModel):
+    name: str = Field(..., description="e.g. Walk-in Dairy & Cold Chiller #1")
+    unit_type: str = Field(..., description="walk_in_chiller, deep_freezer, prep_refrigerator, display_counter, hot_holding")
+    location_area: Optional[str] = "Main Kitchen Storage"
+    min_temp: Optional[float] = None
+    max_temp: Optional[float] = None
+    target_temp: Optional[float] = None
+
+class StorageUnitResponse(BaseModel):
+    id: int
+    restaurant_id: int
+    name: str
+    unit_type: str
+    location_area: str
+    min_temp: float
+    max_temp: float
+    target_temp: float
+    current_temp: float
+    current_humidity: float
+    status: str
+    last_ping: str
+    active_breaches_count: int = 0
+    linked_batches_count: int = 0
+
+class TelemetryLogCreate(BaseModel):
+    unit_id: int
+    temperature: float
+    humidity: Optional[float] = 70.0
+    sensor_battery_pct: Optional[float] = 100.0
+    recorded_at: Optional[datetime] = None
+    is_simulation: bool = False
+
+class TelemetryLogResponse(BaseModel):
+    id: int
+    unit_id: int
+    temperature: float
+    humidity: Optional[float]
+    sensor_battery_pct: float
+    recorded_at: str
+    is_breach: bool
+    is_simulation: bool
+
+class TemperatureAlertResponse(BaseModel):
+    id: int
+    unit_id: int
+    unit_name: str
+    restaurant_id: int
+    breach_temp: float
+    threshold_temp: float
+    severity: str
+    escalation_level: int
+    status: str
+    narrative: Optional[str]
+    detected_at: str
+    acknowledged_at: Optional[str] = None
+    acknowledged_by: Optional[str] = None
+    corrective_action_notes: Optional[str] = None
+
+class AlertAcknowledgeRequest(BaseModel):
+    action_notes: str = Field(..., min_length=5, description="Action taken by kitchen/manager staff to rectify breach")
+    actor_name: Optional[str] = None
+
+class SpoilageBatchPrediction(BaseModel):
+    batch_id: int
+    batch_number: str
+    item_name: str
+    category: str
+    current_unit_name: str
+    current_temp: float
+    max_safe_temp: float
+    nominal_expiry: str
+    cumulative_degree_hours: float
+    degradation_pct: float
+    predicted_safe_hours_remaining: float
+    risk_level: str
+    badge_class: str
+    recommended_action: str
+
+class SimulationTriggerRequest(BaseModel):
+    unit_id: int
+    scenario: str = Field("door_ajar", description="normal, door_ajar, compressor_failure, restoration")
+    readings_count: int = Field(6, ge=1, le=24)
+
+# ----------------- DemandSense (AnnaKavach Challenge 2) Schemas -----------------
+class SaleRecordCreate(BaseModel):
+    dish_id: int
+    sale_date: datetime
+    quantity_sold: int
+    unit_price: float
+    total_revenue: Optional[float] = None
+    channel: Optional[str] = "dine_in"
+
+class SaleRecordResponse(BaseModel):
+    id: int
+    dish_id: int
+    dish_name: str
+    sale_date: str
+    quantity_sold: int
+    unit_price: float
+    total_revenue: float
+    channel: str
+
+class IncomingStockCreate(BaseModel):
+    stock_item_id: int
+    supplier_id: Optional[int] = None
+    po_reference: str
+    quantity: float
+    unit: str = "kg"
+    expected_delivery_date: datetime
+    status: Optional[str] = "confirmed"
+
+class IncomingStockResponse(BaseModel):
+    id: int
+    stock_item_id: int
+    item_name: str
+    supplier_id: Optional[int] = None
+    supplier_name: Optional[str] = None
+    po_reference: str
+    quantity: float
+    unit: str
+    expected_delivery_date: str
+    status: str
+
+class DailyForecastPoint(BaseModel):
+    date: str
+    day_of_week: str
+    predicted_quantity: float
+    confidence_lower: float
+    confidence_upper: float
+    notes: Optional[str] = None
+
+class DishForecastResponse(BaseModel):
+    dish_id: int
+    dish_name: str
+    category: str
+    horizon_days: int
+    history_days_count: int
+    methodology_used: str
+    confidence_level: str
+    metrics: dict
+    forecast: List[DailyForecastPoint]
+
+class IngredientDemandBreakdownDish(BaseModel):
+    dish_id: int
+    dish_name: str
+    portion_quantity: float
+    portion_unit: str
+    total_dish_demand: float
+    converted_ingredient_demand: float
+    stock_unit: str
+
+class DailyIngredientDemandPoint(BaseModel):
+    date: str
+    day_of_week: str
+    daily_demand: float
+    unit: str
+    cumulative_demand: float
+
+class IngredientDemandResponse(BaseModel):
+    stock_item_id: int
+    ingredient_name: str
+    category: str
+    current_stock: float
+    unit: str
+    total_projected_demand: float
+    average_daily_demand: float
+    daily_breakdown: List[DailyIngredientDemandPoint]
+    dishes_breakdown: List[IngredientDemandBreakdownDish]
+
+class DailyProjectedBalance(BaseModel):
+    date: str
+    day_of_week: str
+    starting_balance: float
+    daily_consumption: float
+    incoming_delivery: float
+    ending_balance: float
+    is_negative: bool
+    delivery_pos: List[str] = []
+
+class StockoutRiskResponse(BaseModel):
+    stock_item_id: int
+    ingredient_name: str
+    category: str
+    current_stock: float
+    reserved_stock: float
+    usable_stock: float
+    unit: str
+    reorder_level: float
+    lead_time_days: float
+    safety_buffer_pct: float
+    stockout_risk_score: float
+    risk_category: str
+    stockout_predicted: bool
+    days_until_stockout: Optional[float] = None
+    estimated_stockout_date: Optional[str] = None
+    stockout_before_lead_time: bool
+    factor_breakdown: dict
+    projected_timeline: List[DailyProjectedBalance]
+    narrative_warning: str
+
+class PurchasingRecommendationResponse(BaseModel):
+    stock_item_id: int
+    ingredient_name: str
+    category: str
+    current_usable_stock: float
+    unit: str
+    lead_time_days: float
+    safety_buffer_pct: float
+    lead_time_demand: float
+    safety_buffer_qty: float
+    incoming_before_lead_time: float
+    raw_shortfall: float
+    min_order_qty: float
+    pack_size: float
+    suggested_order_qty: float
+    urgency: str
+    primary_supplier: Optional[dict] = None
+    rationale: str
+    calculation_steps: List[str]
+
+class RecommendationRecalculateRequest(BaseModel):
+    stock_item_id: int
+    custom_lead_time_days: Optional[float] = None
+    custom_safety_buffer_pct: Optional[float] = None
+    demand_multiplier: Optional[float] = 1.0
+    target_horizon_days: Optional[int] = 7
+
+class BatchExpiryDemandAllocation(BaseModel):
+    batch_id: int
+    batch_number: str
+    storage_unit_name: Optional[str] = None
+    initial_quantity: float
+    allocated_consumption: float
+    remaining_quantity: float
+    unit: str
+    expiry_date: str
+    days_until_expiry: int
+    status: str
+    spoilage_risk_alert: Optional[dict] = None
+
+class ExpiryRiskReportResponse(BaseModel):
+    stock_item_id: int
+    ingredient_name: str
+    category: str
+    batches: List[BatchExpiryDemandAllocation]
+    total_usable_stock: float
+    total_demand_in_shelf_life: float
+    potential_waste_quantity: float
+    unit: str
+    risk_summary: str
+    mitigation_actions: List[str]
+
+class ScenarioApplyRequest(BaseModel):
+    scenario_id: str = Field(..., description="scenario_a, scenario_b, scenario_c, scenario_d, scenario_e")
+
+class ScenarioApplyResponse(BaseModel):
+    scenario_id: str
+    title: str
+    description: str
+    applied_changes: List[str]
+    expected_impact: str

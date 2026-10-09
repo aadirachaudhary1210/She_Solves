@@ -22,10 +22,12 @@ def calculate_restaurant_compliance(
     pest_control_frequency_days: int,
     certified_staff_ratio: float, # 0.0 to 1.0
     pending_corrective_actions: int,
-    overdue_corrective_actions: int
+    overdue_corrective_actions: int,
+    active_cold_chain_breaches: int = 0
 ) -> Dict[str, Any]:
     """
     Computes weighted compliance metrics and generates human-readable alerts.
+    Includes Challenge 2 Cold-Chain & Storage Telemetry breach deductions.
     """
     # 1. Hygiene Sub-Score (Max 25 points)
     hygiene_sub = min(25.0, (hygiene_completion_rate / 100.0) * 25.0)
@@ -61,8 +63,12 @@ def calculate_restaurant_compliance(
     corrective_sub -= (overdue_corrective_actions * 4.0)
     corrective_sub = max(0.0, corrective_sub)
 
+    # 7. Cold-Chain Excursion Penalty (Challenge 2)
+    cold_chain_penalty = min(12.0, active_cold_chain_breaches * 3.5)
+
     # Total Score Calculation
-    total_score = round(hygiene_sub + stock_sub + doc_sub + pest_sub + staff_sub + corrective_sub, 1)
+    base_score = hygiene_sub + stock_sub + doc_sub + pest_sub + staff_sub + corrective_sub
+    total_score = round(max(0.0, base_score - cold_chain_penalty), 1)
     total_score = min(100.0, max(0.0, total_score))
 
     # Rating Tier
@@ -81,6 +87,12 @@ def calculate_restaurant_compliance(
 
     # Actionable Alerts Generation
     alerts: List[Dict[str, str]] = []
+    if active_cold_chain_breaches > 0:
+        alerts.append({
+            "type": "error",
+            "title": "Cold-Chain Critical Excursion",
+            "message": f"{active_cold_chain_breaches} refrigerated unit(s) actively breached safe temperature thresholds. Immediate intervention required."
+        })
     if expired_stock_count > 0:
         alerts.append({
             "type": "error",
@@ -117,7 +129,8 @@ def calculate_restaurant_compliance(
             "documentation": round(doc_sub, 1),
             "pest_control": round(pest_sub, 1),
             "staff_training": round(staff_sub, 1),
-            "corrective_actions": round(corrective_sub, 1)
+            "corrective_actions": round(corrective_sub, 1),
+            "cold_chain_penalty": round(cold_chain_penalty, 1)
         },
         "alerts": alerts
     }

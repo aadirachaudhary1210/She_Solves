@@ -13,7 +13,8 @@ from models import (
     CleaningLog, CleaningAgencyRecord, PestControlRecord, Employee, StaffTraining,
     ComplianceDocument, Inspection, InspectionViolation, CorrectiveAction,
     Notification, AuditLog, VerificationStatus, DocumentValidity, InspectionStatus,
-    CorrectiveStatus
+    CorrectiveStatus, StorageUnit, TemperatureLog, TemperatureAlert,
+    SaleRecord, IncomingStock, InventoryMovement
 )
 from auth import get_password_hash
 
@@ -23,7 +24,8 @@ def seed_database():
 
     # Check if already seeded
     if db.query(User).filter(User.email == "restaurant@foodshield.com").first():
-        print("Database already seeded with demo data.")
+        print("Database already seeded with demo data. Checking DemandSense data...")
+        seed_demandsense_data(db)
         db.close()
         return
 
@@ -150,10 +152,105 @@ def seed_database():
     db.add_all([item_paneer, item_oil, item_rice, item_milk])
     db.commit()
 
+    # 6. Cold-Chain Storage Units & Telemetry (Challenge 2)
     now = datetime.utcnow()
+    unit_chiller = StorageUnit(
+        restaurant_id=restaurant_1.id,
+        name="Walk-in Dairy & Cold Chiller #1",
+        unit_type="walk_in_chiller",
+        location_area="Central Cold Storage Room",
+        min_temp=0.5,
+        max_temp=4.0,
+        target_temp=2.5,
+        current_temp=3.2,
+        current_humidity=74.0,
+        status="normal",
+        last_ping=now
+    )
+    unit_freezer = StorageUnit(
+        restaurant_id=restaurant_1.id,
+        name="Deep Meat & Poultry Freezer #1",
+        unit_type="deep_freezer",
+        location_area="Sub-Zero Storage Bay",
+        min_temp=-22.0,
+        max_temp=-18.0,
+        target_temp=-20.0,
+        current_temp=-19.4,
+        current_humidity=58.0,
+        status="normal",
+        last_ping=now
+    )
+    unit_prep = StorageUnit(
+        restaurant_id=restaurant_1.id,
+        name="Line Prep Chilled Counter",
+        unit_type="prep_refrigerator",
+        location_area="Kitchen Hot-Line Section",
+        min_temp=1.0,
+        max_temp=5.0,
+        target_temp=3.5,
+        current_temp=4.8,
+        current_humidity=68.0,
+        status="warning",
+        last_ping=now
+    )
+    unit_display = StorageUnit(
+        restaurant_id=restaurant_1.id,
+        name="Salad & Dessert Display Counter",
+        unit_type="display_counter",
+        location_area="Dining Service Counter",
+        min_temp=2.0,
+        max_temp=6.0,
+        target_temp=4.0,
+        current_temp=7.8,
+        current_humidity=62.0,
+        status="critical_breach",
+        last_ping=now
+    )
+    db.add_all([unit_chiller, unit_freezer, unit_prep, unit_display])
+    db.commit()
+
+    # Seed historical telemetry logs for trend charts
+    for step in range(8):
+        t_time = now - timedelta(hours=7 - step)
+        log_chiller = TemperatureLog(
+            unit_id=unit_chiller.id,
+            temperature=round(2.6 + (step * 0.1), 2),
+            humidity=73.5,
+            sensor_battery_pct=99.0,
+            recorded_at=t_time,
+            is_breach=False
+        )
+        log_display = TemperatureLog(
+            unit_id=unit_display.id,
+            temperature=round(4.8 + (step * 0.45), 2),
+            humidity=61.0,
+            sensor_battery_pct=97.0,
+            recorded_at=t_time,
+            is_breach=(step >= 4)
+        )
+        db.add_all([log_chiller, log_display])
+
+    # Sample Breach Alert for Display Counter (Level 2 Escalated)
+    alert_breach = TemperatureAlert(
+        unit_id=unit_display.id,
+        restaurant_id=restaurant_1.id,
+        breach_temp=7.8,
+        threshold_temp=6.0,
+        severity="critical",
+        escalation_level=2,
+        status="level_2_manager_escalated",
+        narrative="Display counter exceeded safe limit (7.8°C > 6.0°C) for over 90 mins. Elevated to General Manager for immediate compressor service check.",
+        detected_at=now - timedelta(hours=2),
+        acknowledged_at=None
+    )
+    db.add(alert_breach)
+    db.commit()
+
+    # 7. Stock Items & Batches with Storage Unit Links
     batch_paneer = StockBatch(
         stock_item_id=item_paneer.id,
         supplier_id=sup_dairy.id,
+        storage_unit_id=unit_chiller.id,
         batch_number="AML-PAN-2026-B8",
         quantity=20.0,
         unit="kg",
@@ -162,11 +259,12 @@ def seed_database():
         expiry_date=now + timedelta(days=8),
         invoice_number="INV-CAP-2026-8819",
         status="fresh",
-        notes="Stored in Walk-in Chiller Unit #2 at 3.4°C"
+        notes="Stored in Walk-in Chiller Unit #1 at 3.2°C"
     )
     batch_oil = StockBatch(
         stock_item_id=item_oil.id,
         supplier_id=sup_grain.id,
+        storage_unit_id=None,
         batch_number="AWL-SO-0941",
         quantity=60.0,
         unit="liters",
@@ -180,6 +278,7 @@ def seed_database():
     batch_milk = StockBatch(
         stock_item_id=item_milk.id,
         supplier_id=sup_dairy.id,
+        storage_unit_id=unit_chiller.id,
         batch_number="AML-MLK-881",
         quantity=24.0,
         unit="liters",
@@ -188,7 +287,7 @@ def seed_database():
         expiry_date=now + timedelta(days=2), # Expiring soon!
         invoice_number="INV-CAP-2026-8840",
         status="expiring_soon",
-        notes="Daily morning delivery batch"
+        notes="Daily morning delivery batch stored in dairy walk-in"
     )
     db.add_all([batch_paneer, batch_oil, batch_milk])
     db.commit()
@@ -465,8 +564,152 @@ def seed_database():
     db.add_all([audit_1, audit_2, audit_3])
 
     db.commit()
+    seed_demandsense_data(db)
     db.close()
     print("Demo dataset successfully seeded!")
+
+def seed_demandsense_data(db):
+    """
+    Populates 28 days of historical sales records, stock item inventory parameters,
+    recipe ingredient links, and confirmed purchase orders for DemandSense forecasting.
+    """
+    restaurant = db.query(Restaurant).filter(Restaurant.name == "The Royal Spice Kitchen").first()
+    if not restaurant:
+        return
+
+    # Ensure Tomato Stock Item exists
+    item_tomatoes = db.query(StockItem).filter(
+        StockItem.restaurant_id == restaurant.id,
+        StockItem.name.like("%Tomato%")
+    ).first()
+    if not item_tomatoes:
+        item_tomatoes = StockItem(
+            restaurant_id=restaurant.id,
+            name="Fresh Organic Hybrid Tomatoes",
+            category="Vegetables",
+            current_quantity=25.0,
+            unit="kg",
+            reorder_level=8.0,
+            lead_time_days=1.0,
+            safety_buffer_pct=25.0,
+            min_order_qty=10.0,
+            pack_size=5.0,
+            reserved_quantity=0.0,
+            density_g_per_ml=1.05
+        )
+        db.add(item_tomatoes)
+        db.commit()
+
+    # Update StockItem inventory parameters
+    item_paneer = db.query(StockItem).filter(StockItem.restaurant_id == restaurant.id, StockItem.name.like("%Paneer%")).first()
+    if item_paneer:
+        item_paneer.lead_time_days = 2.0
+        item_paneer.safety_buffer_pct = 20.0
+        item_paneer.min_order_qty = 5.0
+        item_paneer.pack_size = 5.0
+        item_paneer.density_g_per_ml = 1.05
+
+    item_rice = db.query(StockItem).filter(StockItem.restaurant_id == restaurant.id, StockItem.name.like("%Rice%")).first()
+    if item_rice:
+        item_rice.lead_time_days = 3.0
+        item_rice.safety_buffer_pct = 15.0
+        item_rice.min_order_qty = 25.0
+        item_rice.pack_size = 25.0
+
+    item_oil = db.query(StockItem).filter(StockItem.restaurant_id == restaurant.id, StockItem.name.like("%Oil%")).first()
+    if item_oil:
+        item_oil.lead_time_days = 2.0
+        item_oil.safety_buffer_pct = 20.0
+        item_oil.min_order_qty = 10.0
+        item_oil.pack_size = 5.0
+        item_oil.density_g_per_ml = 0.92
+
+    item_milk = db.query(StockItem).filter(StockItem.restaurant_id == restaurant.id, StockItem.name.like("%Milk%")).first()
+    if item_milk:
+        item_milk.lead_time_days = 1.0
+        item_milk.safety_buffer_pct = 20.0
+        item_milk.min_order_qty = 10.0
+        item_milk.pack_size = 6.0
+        item_milk.density_g_per_ml = 1.03
+
+    db.commit()
+
+    # Link recipe ingredients to StockItems
+    ings = db.query(Ingredient).join(MenuDish).filter(MenuDish.restaurant_id == restaurant.id).all()
+    for ing in ings:
+        ing_name = ing.name.lower()
+        if "paneer" in ing_name and item_paneer:
+            ing.stock_item_id = item_paneer.id
+        elif "tomato" in ing_name and item_tomatoes:
+            ing.stock_item_id = item_tomatoes.id
+        elif ("rice" in ing_name or "basmati" in ing_name) and item_rice:
+            ing.stock_item_id = item_rice.id
+        elif "oil" in ing_name and item_oil:
+            ing.stock_item_id = item_oil.id
+    db.commit()
+
+    # Check SaleRecord count
+    sales_count = db.query(SaleRecord).filter(SaleRecord.restaurant_id == restaurant.id).count()
+    if sales_count < 20:
+        dish_paneer = db.query(MenuDish).filter(MenuDish.restaurant_id == restaurant.id, MenuDish.name.like("%Paneer%")).first()
+        dish_biryani = db.query(MenuDish).filter(MenuDish.restaurant_id == restaurant.id, MenuDish.name.like("%Biryani%")).first()
+
+        now = datetime.utcnow()
+        # Seed 28 days of realistic sales (4 full weeks)
+        # Weekday base: Mon=12, Tue=10, Wed=14, Thu=16, Fri=24, Sat=32, Sun=28
+        paneer_dow_base = [12, 10, 14, 16, 24, 32, 28]
+        biryani_dow_base = [15, 12, 18, 20, 30, 42, 38]
+
+        new_records = []
+        for days_ago in range(28, 0, -1):
+            sale_dt = now - timedelta(days=days_ago)
+            dow = sale_dt.weekday() # 0 = Monday, 6 = Sunday
+
+            # Subtle weekly variance factor
+            week_factor = 1.0 + (((days_ago // 7) % 3) * 0.04)
+
+            qty_paneer = int(round(paneer_dow_base[dow] * week_factor))
+            qty_biryani = int(round(biryani_dow_base[dow] * week_factor))
+
+            if dish_paneer:
+                new_records.append(SaleRecord(
+                    restaurant_id=restaurant.id,
+                    dish_id=dish_paneer.id,
+                    sale_date=sale_dt,
+                    quantity_sold=qty_paneer,
+                    unit_price=dish_paneer.selling_price,
+                    total_revenue=qty_paneer * dish_paneer.selling_price,
+                    channel="dine_in"
+                ))
+            if dish_biryani:
+                new_records.append(SaleRecord(
+                    restaurant_id=restaurant.id,
+                    dish_id=dish_biryani.id,
+                    sale_date=sale_dt,
+                    quantity_sold=qty_biryani,
+                    unit_price=dish_biryani.selling_price,
+                    total_revenue=qty_biryani * dish_biryani.selling_price,
+                    channel="dine_in"
+                ))
+
+        db.add_all(new_records)
+        db.commit()
+        print(f"Seeded {len(new_records)} historical sale records across 28 days.")
+
+    # Ensure confirmed incoming purchase order exists
+    inc_count = db.query(IncomingStock).filter(IncomingStock.restaurant_id == restaurant.id).count()
+    if inc_count == 0 and item_paneer:
+        po = IncomingStock(
+            restaurant_id=restaurant.id,
+            stock_item_id=item_paneer.id,
+            po_reference="PO-CAP-2026-901",
+            quantity=15.0,
+            unit="kg",
+            expected_delivery_date=datetime.utcnow() + timedelta(days=3),
+            status="confirmed"
+        )
+        db.add(po)
+        db.commit()
 
 if __name__ == "__main__":
     seed_database()

@@ -3,12 +3,13 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FoodShield — Food Safety, Hygiene & Compliance Management Platform</title>
+  <title>AnnaKavach — Cold Chain Intelligence & Food-Safety Platform</title>
   <!-- Tailwind CSS via allowlisted CDN or modern utility styling -->
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
   <style>
     body {
       font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
@@ -147,7 +148,7 @@
   <!-- 2. MAIN APPLICATION SHELL (AFTER AUTH)     -->
   <!-- ========================================== -->
   <div id="appShell" class="hidden min-h-screen flex flex-col md:flex-row bg-slate-50">
-    
+
     <!-- Sidebar Navigation -->
     <aside id="sidebar" class="w-full md:w-64 bg-slate-900 text-slate-300 flex-shrink-0 flex flex-col border-r border-slate-800">
       <!-- App Brand -->
@@ -201,6 +202,13 @@
           <span id="headerStatusBadge" class="hidden md:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold badge-compliant">
             <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
             🟢 Compliant (92.5%)
+          </span>
+          <span id="apiStatusBadge" class="hidden lg:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
+            <span class="pulse-online"></span>
+            <span>API Ready</span>
+          </span>
+          <span id="demoModeBadge" class="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold demo-pill" title="Demonstration Hardware Simulator Available">
+            Demo Mode
           </span>
         </div>
 
@@ -260,7 +268,7 @@
       </div>
       <h3 class="text-lg font-bold text-slate-900">Protected Security Gate</h3>
       <p id="pinModalPurposeText" class="text-xs text-slate-500 mt-1 mb-4">Secondary authentication is mandatory before accessing sensitive personnel or statutory documents.</p>
-      
+
       <div class="mb-4">
         <label class="block text-xs font-semibold text-slate-600 mb-1">Enter 4-Digit Security PIN</label>
         <input type="password" id="securityPinInput" maxlength="4" placeholder="••••" class="text-center tracking-widest text-2xl font-bold py-2 w-36 mx-auto rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-teal-600">
