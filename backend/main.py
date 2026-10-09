@@ -34,6 +34,8 @@ from auth import (
 from compliance_engine import calculate_restaurant_compliance
 from evidence_verifier import evidence_verifier
 from seed_data import seed_database
+import conflict_models
+from conflict_router import conflict_router
 
 # Create DB tables and seed initial production demo data
 Base.metadata.create_all(bind=engine)
@@ -47,6 +49,9 @@ app = FastAPI(
     description="Digital Food Safety, Hygiene, Traceability & Government Compliance Platform",
     version="2.0.0"
 )
+
+# Register Challenge 3 Router
+app.include_router(conflict_router, prefix="/api/conflicts", tags=["AI-Sensor Conflict Detection & Escalation (Challenge 3)"])
 
 # Enable CORS for web clients
 app.add_middleware(

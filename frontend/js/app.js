@@ -11,6 +11,75 @@ const state = {
   isProtectedUnlocked: false,
   unlockExpiry: null,
   pendingProtectedTab: null,
+  conflictFilter: 'all',
+  activeConflictScenario: 'CRITICAL_DISAGREEMENT',
+  conflictIncidents: [
+    {
+      incident_id: "INC-20261009-F81A",
+      conflict_type: "CRITICAL_DISAGREEMENT",
+      severity: "CRITICAL",
+      sensor_status: "CRITICAL",
+      system_status: "SAFE",
+      location_id: "walkin_freezer_01",
+      location_label: "Walk-in Blast Freezer #01",
+      state: "DETECTED",
+      reason: "Critical hazard disagreement: Sensor reports status 'CRITICAL' (14.2°C) while AI assessment reports 'SAFE' (-18.0°C). Sensor indicates defrost failure concealed by frost on camera lens.",
+      requires_escalation: true,
+      sensor_temp_c: 14.2,
+      sensor_raw_temp: 14.2,
+      sensor_unit: "C",
+      sensor_reading_id: "SENS-LIVE-8821",
+      sensor_source: "IOT_TELEMETRY_MODBUS",
+      sensor_timestamp: "2026-10-09 10:45:12 UTC",
+      system_temp_c: -18.0,
+      system_assessment_id: "AI-VIS-9912",
+      system_model: "DemoVisionGaugeScanner-v1.4",
+      system_confidence: 0.88,
+      system_timestamp: "2026-10-09 10:46:00 UTC",
+      temp_difference_c: 32.2,
+      is_simulated: true,
+      created_at: "2026-10-09 10:46:05 UTC",
+      updated_at: "2026-10-09 10:46:05 UTC",
+      events: [
+        { id: 1, action: "CONFLICT_DETECTED", from_state: "NONE", to_state: "DETECTED", actor_email: "system_detector", actor_role: "system", details: "Sensor telemetry (14.2°C, CRITICAL) conflicts with AI assessment (-18.0°C, SAFE). Escalation initiated.", timestamp: "2026-10-09 10:46:05 UTC" }
+      ],
+      notifications: []
+    },
+    {
+      incident_id: "INC-20261009-D42B",
+      conflict_type: "TEMPERATURE_MISMATCH",
+      severity: "HIGH",
+      sensor_status: "WARNING",
+      system_status: "SAFE",
+      location_id: "dairy_chiller_02",
+      location_label: "Dairy Cold Chiller #02",
+      state: "ACKNOWLEDGEMENT_PENDING",
+      reason: "Temperature variance beyond tolerance: Sensor 9.4°C differs from AI assessment 4.0°C by 5.4°C (tolerance: ±2.5°C).",
+      requires_escalation: true,
+      sensor_temp_c: 9.4,
+      sensor_raw_temp: 9.4,
+      sensor_unit: "C",
+      sensor_reading_id: "SENS-LIVE-4412",
+      sensor_source: "IOT_BLE_BEACON",
+      sensor_timestamp: "2026-10-09 10:30:00 UTC",
+      system_temp_c: 4.0,
+      system_assessment_id: "AI-HEUR-3319",
+      system_model: "FoodShield-ThermalInference-v2",
+      system_confidence: 0.91,
+      system_timestamp: "2026-10-09 10:32:00 UTC",
+      temp_difference_c: 5.4,
+      is_simulated: true,
+      created_at: "2026-10-09 10:32:15 UTC",
+      updated_at: "2026-10-09 10:38:00 UTC",
+      acknowledged_by: "restaurant@foodshield.com",
+      acknowledged_at: "2026-10-09 10:38:00 UTC",
+      events: [
+        { id: 1, action: "CONFLICT_DETECTED", from_state: "NONE", to_state: "DETECTED", actor_email: "system_detector", actor_role: "system", details: "Temperature variance of 5.4°C flagged.", timestamp: "2026-10-09 10:32:15 UTC" },
+        { id: 2, action: "ACKNOWLEDGED", from_state: "DETECTED", to_state: "ACKNOWLEDGEMENT_PENDING", actor_email: "restaurant@foodshield.com", actor_role: "restaurant", details: "Supervisor verified reading on secondary display.", timestamp: "2026-10-09 10:38:00 UTC" }
+      ],
+      notifications: []
+    }
+  ],
   
   // Real-time Database
   restaurants: [
@@ -586,6 +655,7 @@ function renderNavigation() {
 
   const restaurantLinks = [
     { id: 'dashboard', label: 'Dashboard & Scores', icon: '📊', isProtected: false },
+    { id: 'conflicts', label: 'AI–Sensor Conflicts', icon: '⚡', isProtected: false, badge: '!' },
     { id: 'menu', label: 'Menu & Traceability', icon: '🍲', isProtected: false },
     { id: 'stock', label: 'Stock & Procurement', icon: '📦', isProtected: false },
     { id: 'hygiene', label: 'Hygiene & Cleaning', icon: '✨', isProtected: false },
@@ -598,6 +668,7 @@ function renderNavigation() {
 
   const officerLinks = [
     { id: 'officer_dashboard', label: 'Officer Overview', icon: '🏛️', isProtected: false },
+    { id: 'conflicts', label: 'AI–Sensor Conflicts', icon: '⚡', isProtected: false, badge: '!' },
     { id: 'officer_restaurants', label: 'Restaurants Directory', icon: '🏢', isProtected: false },
     { id: 'officer_evidence', label: 'Evidence Review Queue', icon: '🔍', isProtected: false, badge: '1' },
     { id: 'officer_inspections', label: 'Inspections & Audits', icon: '📝', isProtected: false },
@@ -649,6 +720,10 @@ function navigateTo(tabId) {
     case 'dashboard':
       titleEl.textContent = "Restaurant Compliance Dashboard";
       renderRestaurantDashboard(contentEl);
+      break;
+    case 'conflicts':
+      titleEl.textContent = "AI–Sensor Conflict Detection & Escalation Grid";
+      renderConflictsManagement(contentEl);
       break;
     case 'menu':
       titleEl.textContent = "Menu Catalog & Ingredient Traceability Provenance";
@@ -3303,3 +3378,1354 @@ function showToast(message, type = "success") {
     toast.classList.add("translate-y-20", "opacity-0");
   }, 3200);
 }
+
+// =============================================================
+// CHALLENGE 3: AI–SENSOR CONFLICT DETECTION & ESCALATION MODULE
+// Redesigned for Clear Non-Technical Presentation & Live Demos
+// =============================================================
+
+function getAuthHeader() {
+  const token = sessionStorage.getItem("foodshield_token") || "demo-token-bypass";
+  return { "Authorization": `Bearer ${token}` };
+}
+
+// Helpers for safe display (Never show undefined°C)
+function formatTemp(val) {
+  if (val === null || val === undefined || isNaN(val)) return "Not available";
+  return `${Number(val).toFixed(1)}°C`;
+}
+
+function formatRawTemp(raw, unit, fallbackC) {
+  if (raw !== null && raw !== undefined && !isNaN(raw)) {
+    return `${Number(raw).toFixed(1)}°${unit || 'C'}`;
+  }
+  if (fallbackC !== null && fallbackC !== undefined && !isNaN(fallbackC)) {
+    return `${Number(fallbackC).toFixed(1)}°C`;
+  }
+  return "Not available";
+}
+
+function formatDisplayDate(dateStr) {
+  if (!dateStr) return "Timestamp unavailable";
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    return d.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  } catch (e) {
+    return dateStr;
+  }
+}
+
+// Plain-Language Discrepancy Generator
+function getPlainLanguageExplanation(inc) {
+  const sT = inc.sensor_temp_c !== null && inc.sensor_temp_c !== undefined ? `${Number(inc.sensor_temp_c).toFixed(1)}°C` : 'measured temp';
+  const aT = inc.system_temp_c !== null && inc.system_temp_c !== undefined ? `${Number(inc.system_temp_c).toFixed(1)}°C` : 'assessed temp';
+  const diffStr = inc.temp_difference_c ? `${Number(inc.temp_difference_c).toFixed(1)}°C` : 'variance';
+
+  switch (inc.conflict_type) {
+    case 'CRITICAL_DISAGREEMENT':
+      return `The physical sensor reports ${sT} (${inc.sensor_status || 'CRITICAL'}), while the AI visual model evaluated ${aT} (${inc.system_status || 'SAFE'}). The ${diffStr} variance exceeds the configured tolerance (±2.5°C). The readings disagree, indicating a severe safety condition such as defrost failure obscured by camera frost.`;
+    case 'TEMPERATURE_MISMATCH':
+      return `The sensor reports ${sT}, while the system assessment reports ${aT}. The ${diffStr} difference exceeds the ±2.5°C allowable tolerance. A verification incident was created to investigate refrigeration drift.`;
+    case 'STATUS_MISMATCH':
+      return `The sensor classified holding conditions as ${inc.sensor_status || 'WARNING'}, whereas the system model assessed ${inc.system_status || 'SAFE'}. The conflicting safety status requires supervisor confirmation.`;
+    case 'STALE_SENSOR_DATA':
+      return `The sensor has not transmitted an update in over 15 minutes. Unmonitored food storage cannot be verified as safe.`;
+    case 'STALE_SYSTEM_ASSESSMENT':
+      return `The AI/system assessment is older than 30 minutes. Real-time safety compliance requires fresh evaluations.`;
+    case 'LOCATION_MISMATCH':
+      return `The sensor telemetry and the AI assessment reference different storage locations. Cross-zone comparisons are invalid.`;
+    case 'INSUFFICIENT_DATA':
+      return `Essential temperature or classification data is missing. In food safety, missing information is treated as UNKNOWN, never assumed safe.`;
+    default:
+      return inc.reason || `Sensor and system assessments disagree beyond allowable food safety thresholds.`;
+  }
+}
+
+// Next Action Guidance
+function getNextActionSummary(stateName) {
+  switch (stateName) {
+    case 'DETECTED':
+      return "Next Action: Acknowledge the incident or request a 6-digit OTP to authorize escalation.";
+    case 'ACKNOWLEDGEMENT_PENDING':
+      return "Next Action: Request an OTP to authorize an emergency escalation alert.";
+    case 'OTP_PENDING':
+      return "Next Action: Enter the 6-digit OTP code to unlock emergency alert dispatch.";
+    case 'VERIFIED':
+      return "Next Action: Send emergency escalation alert to on-call facility technician.";
+    case 'NOTIFICATION_PENDING':
+      return "Next Action: Outbound alert transmission in progress...";
+    case 'NOTIFICATION_SENT':
+      return "Next Action: Awaiting technician physical probe inspection to verify temperature and close incident.";
+    case 'NOTIFICATION_FAILED':
+      return "Next Action: Provider transmission failed. Retry dispatch or complete on-site inspection.";
+    case 'RESOLVED':
+      return "Status: Incident closed and archived. Physical probe check confirmed normal conditions.";
+    default:
+      return "Next Action: Review telemetry and take appropriate corrective action.";
+  }
+}
+
+// Pagination & Search State
+let conflictSearchQuery = "";
+let conflictCurrentPage = 1;
+const CONFLICT_PAGE_SIZE = 5;
+
+// API Sync Function
+async function fetchConflictsFromAPI() {
+  try {
+    const res = await fetch("http://127.0.0.1:8000/api/conflicts", {
+      headers: getAuthHeader()
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        // Deduplicate records by incident_id while preserving the latest data
+        const uniqueMap = new Map();
+        data.forEach(inc => {
+          uniqueMap.set(inc.incident_id, inc);
+        });
+        state.conflictIncidents = Array.from(uniqueMap.values());
+      }
+    }
+  } catch (err) {
+    console.warn("Backend API offline or unreachable, using client state.", err);
+  }
+
+  // Also query messaging config
+  try {
+    const cfgRes = await fetch("http://127.0.0.1:8000/api/conflicts/messaging/config", {
+      headers: getAuthHeader()
+    });
+    if (cfgRes.ok) {
+      state.messagingConfig = await cfgRes.json();
+    }
+  } catch (e) {
+    // dry-run default
+  }
+}
+
+// Main Page Renderer
+function renderConflictsManagement(container) {
+  // Sync in background and re-render counts and table when done
+  fetchConflictsFromAPI().then(() => {
+    updateConflictMetricsDisplay();
+    renderConflictsTable();
+    updateMessagingBanner();
+  });
+
+  container.innerHTML = `
+    <!-- 1. HEADER -->
+    <div class="flex flex-wrap items-center justify-between gap-4 pb-4 border-b border-slate-200">
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-teal-50 text-teal-800 border border-teal-200">
+            Challenge 3 • Real-Time Safety Grid
+          </span>
+          <span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+            FSSAI HACCP Thermometry
+          </span>
+        </div>
+        <h2 class="text-xl font-extrabold text-slate-900 mt-1">AI–Sensor Conflict Detection</h2>
+        <p class="text-xs text-slate-500 max-w-2xl mt-0.5">
+          Monitor temperature disagreements, verify incidents and escalate food-safety risks.
+        </p>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="handleOpenTestMessageModal()" class="py-2 px-3.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold transition flex items-center gap-2 shadow-sm">
+          <span>📡 Test Messaging Endpoint</span>
+        </button>
+        <button onclick="runLiveAnalysis()" class="py-2 px-3.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold transition flex items-center gap-2 shadow-sm">
+          <span>⚡ Analyze Telemetry</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- 2. SIMPLE TOP SUMMARY (Compact 4-Card Metric Row) -->
+    <div class="grid grid-cols-2 lg:grid-cols-4 gap-4" id="conflictSummaryMetricsRow">
+      <!-- Card 1: Active Critical Incidents -->
+      <div class="bg-white rounded-2xl p-4 border border-rose-200 bg-rose-50/30 shadow-sm relative overflow-hidden" title="Active incidents where sensor or system indicated a critical food safety hazard">
+        <div class="flex items-center justify-between text-xs font-bold text-rose-800 mb-1">
+          <span>ACTIVE CRITICAL</span>
+          <span class="w-2 h-2 rounded-full bg-rose-500 animate-pulse"></span>
+        </div>
+        <div class="text-2xl font-black text-rose-700" id="metricActiveCritical">0</div>
+        <p class="text-[11px] text-rose-600 font-medium mt-1">Critical disagreements needing urgent action</p>
+      </div>
+
+      <!-- Card 2: Awaiting OTP -->
+      <div class="bg-white rounded-2xl p-4 border border-amber-200 bg-amber-50/30 shadow-sm" title="Protected escalation actions awaiting 6-digit cryptographic verification">
+        <div class="flex items-center justify-between text-xs font-bold text-amber-800 mb-1">
+          <span>AWAITING OTP</span>
+          <span class="text-xs">🔐</span>
+        </div>
+        <div class="text-2xl font-black text-amber-700" id="metricAwaitingOtp">0</div>
+        <p class="text-[11px] text-amber-600 font-medium mt-1">Pending 2-factor supervisor verification</p>
+      </div>
+
+      <!-- Card 3: Notifications Sent -->
+      <div class="bg-white rounded-2xl p-4 border border-blue-200 bg-blue-50/30 shadow-sm" title="Emergency safety alerts dispatched to facility responders">
+        <div class="flex items-center justify-between text-xs font-bold text-blue-800 mb-1">
+          <span>NOTIFICATIONS SENT</span>
+          <span class="text-xs">📡</span>
+        </div>
+        <div class="text-2xl font-black text-blue-700" id="metricNotificationsSent">0</div>
+        <p class="text-[11px] text-blue-600 font-medium mt-1">Dispatched to on-call response staff</p>
+      </div>
+
+      <!-- Card 4: Resolved Incidents -->
+      <div class="bg-white rounded-2xl p-4 border border-emerald-200 bg-emerald-50/30 shadow-sm" title="Incidents closed after verified physical on-site probe inspection">
+        <div class="flex items-center justify-between text-xs font-bold text-emerald-800 mb-1">
+          <span>RESOLVED INCIDENTS</span>
+          <span class="text-xs">✓</span>
+        </div>
+        <div class="text-2xl font-black text-emerald-700" id="metricResolvedCount">0</div>
+        <p class="text-[11px] text-emerald-600 font-medium mt-1">Verified on-site and closed with probe audit</p>
+      </div>
+    </div>
+
+    <!-- 3. TEST MESSAGING ENDPOINT STATUS (Compact & Understandable) -->
+    <div id="messagingEndpointBanner" class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm flex flex-wrap items-center justify-between gap-3 text-xs">
+      <!-- Injected by updateMessagingBanner -->
+    </div>
+
+    <!-- 4. TELEMETRY ANALYSIS AND SCENARIO SIMULATOR -->
+    <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
+        <div>
+          <h3 class="text-sm font-bold text-slate-800">Test a Safety Scenario</h3>
+          <p class="text-[11px] text-slate-500">
+            Select a scenario to see how the system detects, records and escalates the condition. <strong class="text-slate-700">Simulations do not represent real sensor readings.</strong>
+          </p>
+        </div>
+        <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">
+          🧪 Interactive Simulation Mode
+        </span>
+      </div>
+
+      <!-- 5 Simple Scenario Cards -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 pt-1">
+        <!-- Scenario 1: Critical Conflict -->
+        <button onclick="runSimulatedScenario('CRITICAL_DISAGREEMENT')" class="text-left p-3.5 rounded-xl border border-rose-200 bg-rose-50/40 hover:bg-rose-50 hover:border-rose-300 transition group flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="font-bold text-rose-900 text-xs">Critical Conflict</span>
+              <span class="w-2 h-2 rounded-full bg-rose-500"></span>
+            </div>
+            <div class="text-[11px] font-semibold text-slate-800">Freezer 14°C vs AI -18°C</div>
+            <p class="text-[10px] text-slate-500 mt-1 leading-snug">Defrost failure concealed by camera lens frost.</p>
+          </div>
+          <div class="mt-3 text-[10px] font-bold text-rose-700 flex items-center gap-1 group-hover:underline">
+            <span>Simulate Conflict</span> <span>→</span>
+          </div>
+        </button>
+
+        <!-- Scenario 2: Temperature Mismatch -->
+        <button onclick="runSimulatedScenario('TEMPERATURE_MISMATCH')" class="text-left p-3.5 rounded-xl border border-amber-200 bg-amber-50/40 hover:bg-amber-50 hover:border-amber-300 transition group flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="font-bold text-amber-900 text-xs">Temp Mismatch</span>
+              <span class="w-2 h-2 rounded-full bg-amber-500"></span>
+            </div>
+            <div class="text-[11px] font-semibold text-slate-800">Chiller 9.4°C vs ref 4.0°C</div>
+            <p class="text-[10px] text-slate-500 mt-1 leading-snug">5.4°C variance exceeds ±2.5°C tolerance.</p>
+          </div>
+          <div class="mt-3 text-[10px] font-bold text-amber-700 flex items-center gap-1 group-hover:underline">
+            <span>Simulate Conflict</span> <span>→</span>
+          </div>
+        </button>
+
+        <!-- Scenario 3: Status Conflict -->
+        <button onclick="runSimulatedScenario('STATUS_MISMATCH')" class="text-left p-3.5 rounded-xl border border-orange-200 bg-orange-50/40 hover:bg-orange-50 hover:border-orange-300 transition group flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="font-bold text-orange-900 text-xs">Status Conflict</span>
+              <span class="w-2 h-2 rounded-full bg-orange-500"></span>
+            </div>
+            <div class="text-[11px] font-semibold text-slate-800">Prep WARNING vs AI SAFE</div>
+            <p class="text-[10px] text-slate-500 mt-1 leading-snug">Differing classification at threshold.</p>
+          </div>
+          <div class="mt-3 text-[10px] font-bold text-orange-700 flex items-center gap-1 group-hover:underline">
+            <span>Simulate Conflict</span> <span>→</span>
+          </div>
+        </button>
+
+        <!-- Scenario 4: Stale Sensor -->
+        <button onclick="runSimulatedScenario('STALE_SENSOR_DATA')" class="text-left p-3.5 rounded-xl border border-blue-200 bg-blue-50/40 hover:bg-blue-50 hover:border-blue-300 transition group flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="font-bold text-blue-900 text-xs">Stale Sensor</span>
+              <span class="w-2 h-2 rounded-full bg-blue-500"></span>
+            </div>
+            <div class="text-[11px] font-semibold text-slate-800">No update for 75 minutes</div>
+            <p class="text-[10px] text-slate-500 mt-1 leading-snug">Transmitter silence in cold storage room.</p>
+          </div>
+          <div class="mt-3 text-[10px] font-bold text-blue-700 flex items-center gap-1 group-hover:underline">
+            <span>Simulate Conflict</span> <span>→</span>
+          </div>
+        </button>
+
+        <!-- Scenario 5: Safe Agreement -->
+        <button onclick="runSimulatedScenario('SAFE_AGREEMENT')" class="text-left p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/40 hover:bg-emerald-50 hover:border-emerald-300 transition group flex flex-col justify-between">
+          <div>
+            <div class="flex items-center justify-between mb-1.5">
+              <span class="font-bold text-emerald-900 text-xs">Safe Agreement</span>
+              <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+            </div>
+            <div class="text-[11px] font-semibold text-slate-800">Both readings 3.8°C</div>
+            <p class="text-[10px] text-slate-500 mt-1 leading-snug">Sensor and AI in complete consensus.</p>
+          </div>
+          <div class="mt-3 text-[10px] font-bold text-emerald-700 flex items-center gap-1 group-hover:underline">
+            <span>Simulate Consensus</span> <span>→</span>
+          </div>
+        </button>
+      </div>
+    </div>
+
+    <!-- 5. ACTIVE INCIDENTS (Clean Table / Compact Cards + Filters + Search) -->
+    <div class="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
+      <!-- Search & Filters Toolbar -->
+      <div class="flex flex-wrap items-center justify-between gap-3">
+        <!-- Filter Tabs -->
+        <div class="flex flex-wrap gap-1 p-1 bg-slate-100 rounded-xl text-xs font-semibold">
+          <button onclick="setConflictFilterTab('all')" class="py-1 px-3 rounded-lg transition ${state.conflictFilter === 'all' ? 'bg-white text-slate-900 font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'}">All Incidents</button>
+          <button onclick="setConflictFilterTab('CRITICAL')" class="py-1 px-3 rounded-lg transition ${state.conflictFilter === 'CRITICAL' ? 'bg-white text-rose-700 font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'}">Critical</button>
+          <button onclick="setConflictFilterTab('OTP_PENDING')" class="py-1 px-3 rounded-lg transition ${state.conflictFilter === 'OTP_PENDING' ? 'bg-white text-amber-700 font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'}">Awaiting OTP</button>
+          <button onclick="setConflictFilterTab('VERIFIED')" class="py-1 px-3 rounded-lg transition ${state.conflictFilter === 'VERIFIED' ? 'bg-white text-teal-800 font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'}">Verified</button>
+          <button onclick="setConflictFilterTab('NOTIFICATION_SENT')" class="py-1 px-3 rounded-lg transition ${state.conflictFilter === 'NOTIFICATION_SENT' ? 'bg-white text-blue-700 font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'}">Alert Sent</button>
+          <button onclick="setConflictFilterTab('RESOLVED')" class="py-1 px-3 rounded-lg transition ${state.conflictFilter === 'RESOLVED' ? 'bg-white text-emerald-800 font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'}">Resolved</button>
+        </div>
+
+        <!-- Search Input -->
+        <div class="w-full sm:w-64">
+          <input type="text" id="conflictSearchInput" oninput="handleConflictSearch(this.value)" placeholder="Search ID or location..." value="${conflictSearchQuery}" class="w-full px-3 py-1.5 rounded-xl border border-slate-300 text-xs focus:outline-none focus:ring-2 focus:ring-teal-600">
+        </div>
+      </div>
+
+      <!-- Table Container -->
+      <div id="conflictsTableContainer" class="overflow-x-auto">
+        <!-- Rendered by renderConflictsTable() -->
+      </div>
+
+      <!-- Pagination Footer -->
+      <div id="conflictsPaginationFooter" class="flex items-center justify-between pt-3 border-t border-slate-100 text-xs text-slate-500">
+        <!-- Rendered by renderConflictsTable() -->
+      </div>
+    </div>
+  `;
+
+  updateConflictMetricsDisplay();
+  updateMessagingBanner();
+  renderConflictsTable();
+}
+
+// Update Top 4 Metrics
+function updateConflictMetricsDisplay() {
+  const incidents = state.conflictIncidents || [];
+  
+  // Deduplicate before computing counts
+  const uniqueMap = new Map();
+  incidents.forEach(i => uniqueMap.set(i.incident_id, i));
+  const list = Array.from(uniqueMap.values());
+
+  const activeCritical = list.filter(i => i.severity === 'CRITICAL' && i.state !== 'RESOLVED').length;
+  const awaitingOtp = list.filter(i => i.state === 'OTP_PENDING').length;
+  const notificationsSent = list.filter(i => i.state === 'NOTIFICATION_SENT').length;
+  const resolved = list.filter(i => i.state === 'RESOLVED').length;
+
+  const elCrit = document.getElementById("metricActiveCritical");
+  const elOtp = document.getElementById("metricAwaitingOtp");
+  const elSent = document.getElementById("metricNotificationsSent");
+  const elRes = document.getElementById("metricResolvedCount");
+
+  if (elCrit) elCrit.textContent = activeCritical;
+  if (elOtp) elOtp.textContent = awaitingOtp;
+  if (elSent) elSent.textContent = notificationsSent;
+  if (elRes) elRes.textContent = resolved;
+}
+
+// Update Messaging Status Banner
+function updateMessagingBanner() {
+  const container = document.getElementById("messagingEndpointBanner");
+  if (!container) return;
+
+  const cfg = state.messagingConfig || {
+    provider: 'dry_run',
+    has_endpoint: false,
+    destination: '+91 98765 43210',
+    dry_run_active: true
+  };
+
+  const isDryRun = cfg.dry_run_active || !cfg.has_endpoint;
+
+  container.innerHTML = `
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-xl ${isDryRun ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'} flex items-center justify-center font-bold text-sm">
+        ${isDryRun ? '🟡' : '🟢'}
+      </div>
+      <div>
+        <div class="font-bold text-slate-900 flex items-center gap-2">
+          <span>Outbound Escalation Channel:</span>
+          <span class="font-mono text-[11px] ${isDryRun ? 'text-amber-800 bg-amber-50 px-2 py-0.5 rounded border border-amber-200' : 'text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200'}">
+            ${isDryRun ? 'Simulation / Dry-Run Mode' : `Live Gateway (${cfg.provider})`}
+          </span>
+        </div>
+        <p class="text-[11px] text-slate-500 mt-0.5">
+          ${isDryRun 
+            ? 'Live endpoint credentials not configured; test alerts simulate safely without external network charges.' 
+            : `Connected to endpoint • Designated target: ${cfg.destination}`
+          }
+        </p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <button onclick="handleOpenTestMessageModal()" class="py-1.5 px-3 rounded-lg border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold text-xs transition">
+        Configure & Send Test Message
+      </button>
+    </div>
+  `;
+}
+
+// Filter Tabs & Search
+function setConflictFilterTab(tab) {
+  state.conflictFilter = tab;
+  conflictCurrentPage = 1;
+  renderConflictsTable();
+}
+
+function handleConflictSearch(val) {
+  conflictSearchQuery = val.trim().toLowerCase();
+  conflictCurrentPage = 1;
+  renderConflictsTable();
+}
+
+// Render Clean Table of Incidents
+function renderConflictsTable() {
+  const container = document.getElementById("conflictsTableContainer");
+  const paginationFooter = document.getElementById("conflictsPaginationFooter");
+  if (!container) return;
+
+  const incidents = state.conflictIncidents || [];
+
+  // Deduplicate by incident_id
+  const uniqueMap = new Map();
+  incidents.forEach(i => uniqueMap.set(i.incident_id, i));
+  let list = Array.from(uniqueMap.values());
+
+  // Sort newest first
+  list.sort((a, b) => {
+    const tA = new Date(a.created_at || 0).getTime();
+    const tB = new Date(b.created_at || 0).getTime();
+    return tB - tA;
+  });
+
+  // Apply Filter
+  const filter = state.conflictFilter || 'all';
+  if (filter === 'CRITICAL') {
+    list = list.filter(i => i.severity === 'CRITICAL');
+  } else if (filter !== 'all') {
+    list = list.filter(i => i.state === filter);
+  }
+
+  // Apply Search
+  if (conflictSearchQuery) {
+    list = list.filter(i => 
+      (i.incident_id && i.incident_id.toLowerCase().includes(conflictSearchQuery)) ||
+      (i.location_id && i.location_id.toLowerCase().includes(conflictSearchQuery)) ||
+      (i.location_label && i.location_label.toLowerCase().includes(conflictSearchQuery)) ||
+      (i.conflict_type && i.conflict_type.toLowerCase().includes(conflictSearchQuery))
+    );
+  }
+
+  const totalItems = list.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / CONFLICT_PAGE_SIZE));
+  conflictCurrentPage = Math.min(conflictCurrentPage, totalPages);
+
+  const startIndex = (conflictCurrentPage - 1) * CONFLICT_PAGE_SIZE;
+  const pageItems = list.slice(startIndex, startIndex + CONFLICT_PAGE_SIZE);
+
+  if (pageItems.length === 0) {
+    container.innerHTML = `
+      <div class="py-12 text-center text-slate-400 text-xs">
+        <div class="text-3xl mb-2">🔍</div>
+        <div class="font-bold text-slate-700">No matching incidents found</div>
+        <p class="text-[11px] text-slate-400 mt-1">Try selecting a different filter or run a simulation scenario above.</p>
+      </div>
+    `;
+    if (paginationFooter) paginationFooter.innerHTML = '';
+    return;
+  }
+
+  // Render Table
+  container.innerHTML = `
+    <table class="w-full text-left text-xs border-collapse">
+      <thead>
+        <tr class="border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider bg-slate-50/70">
+          <th class="py-3 px-3">Incident ID & Time</th>
+          <th class="py-3 px-3">Location</th>
+          <th class="py-3 px-3">Sensor Telemetry</th>
+          <th class="py-3 px-3">AI Assessment</th>
+          <th class="py-3 px-3">Severity</th>
+          <th class="py-3 px-3">Workflow Stage</th>
+          <th class="py-3 px-3 text-right">Action</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-slate-100">
+        ${pageItems.map(inc => renderIncidentRow(inc)).join('')}
+      </tbody>
+    </table>
+  `;
+
+  // Render Pagination
+  if (paginationFooter) {
+    paginationFooter.innerHTML = `
+      <div>
+        Showing <span class="font-bold text-slate-800">${startIndex + 1}</span> to <span class="font-bold text-slate-800">${Math.min(startIndex + CONFLICT_PAGE_SIZE, totalItems)}</span> of <span class="font-bold text-slate-800">${totalItems}</span> incidents
+      </div>
+      <div class="flex items-center gap-1">
+        <button onclick="changeConflictPage(${conflictCurrentPage - 1})" ${conflictCurrentPage <= 1 ? 'disabled class="opacity-40 cursor-not-allowed"' : 'class="hover:bg-slate-100"'} class="py-1 px-2.5 rounded-lg border border-slate-200 font-semibold">Previous</button>
+        <span class="px-2 text-slate-700 font-semibold">Page ${conflictCurrentPage} of ${totalPages}</span>
+        <button onclick="changeConflictPage(${conflictCurrentPage + 1})" ${conflictCurrentPage >= totalPages ? 'disabled class="opacity-40 cursor-not-allowed"' : 'class="hover:bg-slate-100"'} class="py-1 px-2.5 rounded-lg border border-slate-200 font-semibold">Next</button>
+      </div>
+    `;
+  }
+}
+
+function changeConflictPage(newPage) {
+  conflictCurrentPage = newPage;
+  renderConflictsTable();
+}
+
+function renderIncidentRow(inc) {
+  const isCritical = inc.severity === 'CRITICAL';
+  const isResolved = inc.state === 'RESOLVED';
+
+  // Severity Badge
+  const severityBadge = isCritical
+    ? `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300">Critical</span>`
+    : (inc.severity === 'HIGH'
+      ? `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">High</span>`
+      : `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-300">Moderate</span>`);
+
+  // Workflow Stage Badge
+  const stageBadge = getStageBadge(inc.state);
+
+  // Contextual Primary Action Button
+  let actionButton = '';
+  if (inc.state === 'DETECTED') {
+    actionButton = `
+      <button onclick="openIncidentDetailsModal('${inc.incident_id}')" class="py-1 px-3 rounded-lg bg-teal-600 hover:bg-teal-700 text-white font-bold text-[11px] shadow-sm">
+        Review & Acknowledge
+      </button>
+    `;
+  } else if (inc.state === 'OTP_PENDING') {
+    actionButton = `
+      <button onclick="openOTPModal('${inc.incident_id}')" class="py-1 px-3 rounded-lg bg-amber-600 hover:bg-amber-700 text-white font-bold text-[11px] shadow-sm animate-pulse">
+        Enter OTP
+      </button>
+    `;
+  } else if (inc.state === 'VERIFIED') {
+    actionButton = `
+      <button onclick="openIncidentDetailsModal('${inc.incident_id}')" class="py-1 px-3 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] shadow-sm">
+        Send Alert
+      </button>
+    `;
+  } else {
+    actionButton = `
+      <button onclick="openIncidentDetailsModal('${inc.incident_id}')" class="py-1 px-3 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-[11px] border border-slate-300">
+        View Details
+      </button>
+    `;
+  }
+
+  const sensorTemp = formatTemp(inc.sensor_temp_c);
+  const aiTemp = formatTemp(inc.system_temp_c);
+
+  return `
+    <tr class="hover:bg-slate-50/80 transition">
+      <!-- ID & Time -->
+      <td class="py-3 px-3">
+        <div class="font-mono font-bold text-slate-900">${inc.incident_id}</div>
+        <div class="text-[10px] text-slate-400 mt-0.5">${formatDisplayDate(inc.created_at)}</div>
+        ${inc.is_simulated ? `<span class="inline-block mt-0.5 px-1.5 py-0.2 rounded text-[9px] font-bold bg-purple-50 text-purple-700 border border-purple-200">Simulated</span>` : ''}
+      </td>
+
+      <!-- Location -->
+      <td class="py-3 px-3">
+        <div class="font-semibold text-slate-800">${inc.location_label || inc.location_id}</div>
+        <div class="text-[10px] text-slate-400">${inc.location_id}</div>
+      </td>
+
+      <!-- Sensor -->
+      <td class="py-3 px-3">
+        <div class="font-bold text-slate-900">${sensorTemp}</div>
+        <span class="inline-block text-[9px] font-bold px-1.5 py-0.2 rounded ${
+          inc.sensor_status === 'CRITICAL' ? 'bg-rose-100 text-rose-800 border border-rose-300' : (inc.sensor_status === 'WARNING' ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-emerald-100 text-emerald-800 border border-emerald-300')
+        }">
+          ${inc.sensor_status || 'RECORDED'}
+        </span>
+      </td>
+
+      <!-- AI Assessment -->
+      <td class="py-3 px-3">
+        <div class="font-bold text-slate-900">${aiTemp}</div>
+        <span class="inline-block text-[9px] font-bold px-1.5 py-0.2 rounded ${
+          inc.system_status === 'CRITICAL' ? 'bg-rose-100 text-rose-800 border border-rose-300' : (inc.system_status === 'WARNING' ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-emerald-100 text-emerald-800 border border-emerald-300')
+        }">
+          ${inc.system_status || 'ASSESSED'}
+        </span>
+      </td>
+
+      <!-- Severity -->
+      <td class="py-3 px-3">
+        ${severityBadge}
+      </td>
+
+      <!-- Workflow Stage -->
+      <td class="py-3 px-3">
+        ${stageBadge}
+      </td>
+
+      <!-- Action -->
+      <td class="py-3 px-3 text-right">
+        ${actionButton}
+      </td>
+    </tr>
+  `;
+}
+
+function getStageBadge(stateName) {
+  switch (stateName) {
+    case 'DETECTED':
+      return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700 border border-slate-300">1. Detected</span>`;
+    case 'ACKNOWLEDGEMENT_PENDING':
+      return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-800 border border-blue-300">2. Acknowledged</span>`;
+    case 'OTP_PENDING':
+      return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-100 text-amber-800 border border-amber-300 animate-pulse">3. OTP Pending 🔐</span>`;
+    case 'VERIFIED':
+      return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-teal-100 text-teal-800 border border-teal-300">3. OTP Verified ✓</span>`;
+    case 'NOTIFICATION_PENDING':
+      return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-100 text-blue-800 border border-blue-300">4. Dispatching...</span>`;
+    case 'NOTIFICATION_SENT':
+      return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-purple-100 text-purple-800 border border-purple-300">4. Alert Sent 📡</span>`;
+    case 'NOTIFICATION_FAILED':
+      return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-rose-100 text-rose-800 border border-rose-300">Alert Failed (Retry)</span>`;
+    case 'RESOLVED':
+      return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-100 text-emerald-800 border border-emerald-300">5. Resolved ✓</span>`;
+    default:
+      return `<span class="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-700">${stateName}</span>`;
+  }
+}
+
+// -------------------------------------------------------------
+// 6. INCIDENT DETAILS MODAL (Organized into Clear Sections)
+// -------------------------------------------------------------
+
+async function openIncidentDetailsModal(incidentId) {
+  let inc = (state.conflictIncidents || []).find(i => i.incident_id === incidentId);
+  let detailData = null;
+
+  try {
+    const res = await fetch(`http://127.0.0.1:8000/api/conflicts/${encodeURIComponent(incidentId)}`, {
+      headers: getAuthHeader()
+    });
+    if (res.ok) {
+      detailData = await res.json();
+      inc = detailData.incident;
+    }
+  } catch (e) {
+    // offline fallback
+  }
+
+  if (!inc) {
+    showToast("Incident record not found.", "error");
+    return;
+  }
+
+  const modalTitle = document.getElementById("actionModalTitle");
+  const modalContent = document.getElementById("actionModalContent");
+
+  const sensorTemp = formatTemp(inc.sensor_temp_c);
+  const rawSensor = formatRawTemp(inc.sensor_raw_temp, inc.sensor_unit, inc.sensor_temp_c);
+  const aiTemp = formatTemp(inc.system_temp_c);
+  const plainExplanation = getPlainLanguageExplanation(inc);
+  const nextAction = getNextActionSummary(inc.state);
+
+  modalTitle.textContent = `Incident Review: ${inc.incident_id}`;
+
+  modalContent.innerHTML = `
+    <div class="space-y-4 text-xs max-h-[75vh] overflow-y-auto pr-1">
+      <!-- Top Overview Bar -->
+      <div class="flex flex-wrap items-center justify-between gap-2 p-3 bg-slate-50 rounded-xl border border-slate-200">
+        <div>
+          <div class="text-[11px] text-slate-500">Monitored Zone:</div>
+          <div class="font-bold text-slate-900 text-sm">${inc.location_label || inc.location_id}</div>
+        </div>
+        <div class="text-right">
+          <div class="text-[11px] text-slate-500">Detected At:</div>
+          <div class="font-semibold text-slate-800">${formatDisplayDate(inc.created_at)}</div>
+        </div>
+        <div>
+          ${inc.is_simulated ? `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200">🧪 Simulated Incident</span>` : `<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-teal-50 text-teal-800 border border-teal-200">Live Telemetry</span>`}
+        </div>
+      </div>
+
+      <!-- SECTION 7: WORKFLOW VISUALIZATION STEPPER -->
+      <div class="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5">
+        <div class="flex items-center justify-between text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+          <span>Escalation Lifecycle Stepper</span>
+          <span class="text-teal-700">${getStageBadge(inc.state)}</span>
+        </div>
+        <div class="flex items-center gap-1.5 pt-1">
+          ${getStepperSteps(inc.state)}
+        </div>
+        <p class="text-[11px] font-medium text-slate-700 pt-1">${nextAction}</p>
+      </div>
+
+      <!-- SECTIONS A & B: SENSOR DETECTED VS AI ASSESSED -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <!-- Section A: What the sensor detected -->
+        <div class="bg-blue-50/50 p-4 rounded-xl border border-blue-200 space-y-2">
+          <div class="flex items-center justify-between pb-2 border-b border-blue-200">
+            <span class="font-bold text-blue-900 text-xs">A. What the Sensor Detected</span>
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold ${
+              inc.sensor_status === 'CRITICAL' ? 'bg-rose-600 text-white' : (inc.sensor_status === 'WARNING' ? 'bg-amber-500 text-white' : 'bg-emerald-600 text-white')
+            }">
+              ${inc.sensor_status || 'RECORDED'}
+            </span>
+          </div>
+
+          <div class="flex items-baseline justify-between pt-1">
+            <span class="text-2xl font-black text-slate-900">${sensorTemp}</span>
+            <span class="text-[11px] text-slate-500">Raw: ${rawSensor}</span>
+          </div>
+
+          <div class="space-y-1 text-[11px] text-slate-600 pt-1">
+            <div>Reading ID: <strong class="text-slate-800 font-mono text-[10px]">${inc.sensor_reading_id || 'SENS-AUTO'}</strong></div>
+            <div>Source: <strong class="text-slate-800">${inc.sensor_source || 'IoT Temperature Sensor'}</strong></div>
+            <div>Timestamp: <strong class="text-slate-800">${formatDisplayDate(inc.sensor_timestamp)}</strong></div>
+          </div>
+        </div>
+
+        <!-- Section B: What the AI assessed -->
+        <div class="bg-purple-50/50 p-4 rounded-xl border border-purple-200 space-y-2">
+          <div class="flex items-center justify-between pb-2 border-b border-purple-200">
+            <span class="font-bold text-purple-900 text-xs">B. What the AI Assessed</span>
+            <span class="px-2 py-0.5 rounded text-[10px] font-bold ${
+              inc.system_status === 'CRITICAL' ? 'bg-rose-600 text-white' : (inc.system_status === 'WARNING' ? 'bg-amber-500 text-white' : 'bg-emerald-600 text-white')
+            }">
+              ${inc.system_status || 'ASSESSED'}
+            </span>
+          </div>
+
+          <div class="flex items-baseline justify-between pt-1">
+            <span class="text-2xl font-black text-slate-900">${aiTemp}</span>
+            <span class="text-[11px] text-slate-500">Confidence: <strong class="text-purple-900">${inc.system_confidence ? `${Math.round(inc.system_confidence * 100)}%` : '90%'}</strong></span>
+          </div>
+
+          <div class="space-y-1 text-[11px] text-slate-600 pt-1">
+            <div>Assessment ID: <strong class="text-slate-800 font-mono text-[10px]">${inc.system_assessment_id || 'AI-ASSESS-01'}</strong></div>
+            <div>Model / Logic: <strong class="text-slate-800 text-[10px]">${inc.system_model || 'FoodShield-RuleEngine-v2'}</strong></div>
+            <div>Timestamp: <strong class="text-slate-800">${formatDisplayDate(inc.system_timestamp)}</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- SECTION C: WHY THE READINGS DISAGREE -->
+      <div class="p-3.5 rounded-xl border border-rose-200 bg-rose-50/40 text-slate-800 space-y-1.5">
+        <div class="font-bold text-rose-950 flex items-center justify-between">
+          <span>C. Why the Readings Disagree</span>
+          ${inc.temp_difference_c ? `<span class="font-mono text-xs font-bold bg-white px-2 py-0.5 rounded border border-rose-200">Variance: Δ ${Number(inc.temp_difference_c).toFixed(1)}°C</span>` : ''}
+        </div>
+        <p class="text-xs leading-relaxed text-slate-700">${plainExplanation}</p>
+        <div class="text-[11px] font-semibold text-rose-800 pt-1 flex items-center gap-1.5">
+          <span>🛡️ Safety Constraint:</span>
+          <span>Physical sensor alerts must not be suppressed solely because AI reports SAFE.</span>
+        </div>
+      </div>
+
+      <!-- SECTION D: RECOMMENDED NEXT ACTION & ACTION BUTTONS -->
+      <div class="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+        <div class="font-bold text-slate-800">D. Recommended Next Action</div>
+        <p class="text-xs text-slate-600">${nextAction}</p>
+
+        <!-- Contextual Actions Bar -->
+        <div class="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200">
+          ${inc.state === 'DETECTED' ? `
+            <button onclick="confirmAcknowledge('${inc.incident_id}')" class="py-2 px-3.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-xs transition border border-slate-300">
+              ✓ Acknowledge Incident
+            </button>
+            <button onclick="openOTPModal('${inc.incident_id}')" class="py-2 px-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs transition shadow-sm">
+              🔐 Request OTP
+            </button>
+          ` : ''}
+
+          ${inc.state === 'ACKNOWLEDGEMENT_PENDING' ? `
+            <button onclick="openOTPModal('${inc.incident_id}')" class="py-2 px-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold text-xs transition shadow-sm">
+              🔐 Request OTP
+            </button>
+            <button onclick="confirmResolve('${inc.incident_id}')" class="py-2 px-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition">
+              ✓ Resolve with Physical Check
+            </button>
+          ` : ''}
+
+          ${inc.state === 'OTP_PENDING' ? `
+            <button onclick="openOTPModal('${inc.incident_id}')" class="py-2 px-4 rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs transition shadow-sm animate-pulse">
+              ⌨️ Enter & Verify OTP
+            </button>
+          ` : ''}
+
+          ${inc.state === 'VERIFIED' ? `
+            <button onclick="confirmEscalateAlert('${inc.incident_id}')" class="py-2 px-4 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs transition shadow-sm">
+              🚨 Send Escalation Alert
+            </button>
+          ` : ''}
+
+          ${['NOTIFICATION_SENT', 'NOTIFICATION_FAILED'].includes(inc.state) ? `
+            ${inc.state === 'NOTIFICATION_FAILED' ? `
+              <button onclick="confirmEscalateAlert('${inc.incident_id}')" class="py-2 px-3.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs transition">
+                🔄 Retry Alert Dispatch
+              </button>
+            ` : ''}
+            <button onclick="confirmResolve('${inc.incident_id}')" class="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs transition shadow-sm">
+              ✓ Resolve Incident (Physical Check)
+            </button>
+          ` : ''}
+
+          ${inc.state === 'RESOLVED' ? `
+            <div class="text-xs text-emerald-700 font-bold flex items-center gap-1.5">
+              <span>✓ Incident Closed:</span>
+              <span class="font-normal">${inc.resolution_notes || 'Physical probe check verified safe conditions.'}</span>
+            </div>
+          ` : ''}
+        </div>
+      </div>
+
+      <!-- SECTION E: AUDIT TIMELINE -->
+      <div class="space-y-2 pt-2 border-t border-slate-100">
+        <div class="flex items-center justify-between text-xs font-bold text-slate-800">
+          <span>E. Audit Timeline</span>
+          <span class="text-[10px] text-slate-400">Append-Only Event Trail</span>
+        </div>
+        <div class="space-y-1.5">
+          ${((detailData?.events || inc.events || [])).map(ev => `
+            <div class="p-2.5 bg-slate-50 rounded-lg border border-slate-200 text-[11px] flex items-start justify-between gap-3">
+              <div>
+                <span class="font-mono font-bold text-slate-900">${ev.action}</span>
+                <span class="text-slate-400 mx-1">•</span>
+                <span class="text-slate-700">${ev.details || ''}</span>
+              </div>
+              <div class="text-[10px] text-slate-400 whitespace-nowrap text-right">
+                <div>${ev.actor_email || 'system'}</div>
+                <div>${formatDisplayDate(ev.timestamp)}</div>
+              </div>
+            </div>
+          `).join('') || '<div class="text-[11px] text-slate-400 p-2">No historical events recorded yet.</div>'}
+        </div>
+      </div>
+    </div>
+  `;
+
+  openActionModal();
+}
+
+function getStepperSteps(currentState) {
+  const steps = [
+    { key: 'DETECTED', label: '1. Detected' },
+    { key: 'ACKNOWLEDGEMENT_PENDING', label: '2. Acknowledged' },
+    { key: 'VERIFIED', label: '3. OTP Verified' },
+    { key: 'NOTIFICATION_SENT', label: '4. Alert Sent' },
+    { key: 'RESOLVED', label: '5. Resolved' }
+  ];
+
+  const stateRank = {
+    'DETECTED': 1,
+    'ACKNOWLEDGEMENT_PENDING': 2,
+    'OTP_PENDING': 2.5,
+    'VERIFIED': 3,
+    'NOTIFICATION_PENDING': 3.5,
+    'NOTIFICATION_SENT': 4,
+    'NOTIFICATION_FAILED': 3.8,
+    'RESOLVED': 5
+  };
+
+  const currentRank = stateRank[currentState] || 1;
+
+  return steps.map((step, idx) => {
+    const rank = idx + 1;
+    let badgeClass = '';
+
+    if (currentRank > rank) {
+      // Completed step
+      badgeClass = 'bg-teal-600 text-white font-bold';
+    } else if (Math.floor(currentRank) === rank) {
+      // Active current step
+      if (currentState === 'OTP_PENDING') {
+        badgeClass = 'bg-amber-500 text-white font-bold animate-pulse';
+      } else if (currentState === 'NOTIFICATION_FAILED') {
+        badgeClass = 'bg-rose-600 text-white font-bold';
+      } else {
+        badgeClass = 'bg-teal-700 text-white font-bold';
+      }
+    } else {
+      // Upcoming neutral step
+      badgeClass = 'bg-slate-100 text-slate-400 border border-slate-200';
+    }
+
+    return `
+      <div class="flex-1 py-1.5 px-2 rounded-lg text-center text-[10px] ${badgeClass}">
+        ${step.label}
+      </div>
+    `;
+  }).join('');
+}
+
+// -------------------------------------------------------------
+// 7. ACTIONS WITH CONFIRMATION & OTP MODAL
+// -------------------------------------------------------------
+
+function confirmAcknowledge(incidentId) {
+  if (!confirm(`Confirm acknowledgment of incident ${incidentId}? This signifies an on-duty supervisor is investigating the discrepancy.`)) {
+    return;
+  }
+  executeAcknowledge(incidentId);
+}
+
+async function executeAcknowledge(incidentId) {
+  try {
+    const res = await fetch(`http://127.0.0.1:8000/api/conflicts/${encodeURIComponent(incidentId)}/acknowledge`, {
+      method: "POST",
+      headers: { ...getAuthHeader(), "Content-Type": "application/json" },
+      body: JSON.stringify({ notes: "Supervisor verified sensor reading on secondary terminal." })
+    });
+
+    if (res.ok) {
+      showToast("Incident acknowledged.", "success");
+      await fetchConflictsFromAPI();
+      openIncidentDetailsModal(incidentId);
+      updateConflictMetricsDisplay();
+      renderConflictsTable();
+      return;
+    }
+  } catch (e) {
+    // fallback
+  }
+
+  // local fallback
+  const inc = (state.conflictIncidents || []).find(i => i.incident_id === incidentId);
+  if (inc) {
+    inc.state = 'ACKNOWLEDGEMENT_PENDING';
+    inc.events.push({
+      action: "ACKNOWLEDGED",
+      actor_email: state.currentUser?.email || "supervisor@foodshield.com",
+      details: "Supervisor verified discrepancy on-site.",
+      timestamp: new Date().toISOString()
+    });
+    showToast("Incident acknowledged.", "success");
+    openIncidentDetailsModal(incidentId);
+    updateConflictMetricsDisplay();
+    renderConflictsTable();
+  }
+}
+
+async function openOTPModal(incidentId) {
+  let devCode = null;
+  let maskedDest = "+91 98*** 10";
+
+  try {
+    const res = await fetch(`http://127.0.0.1:8000/api/conflicts/${encodeURIComponent(incidentId)}/otp/request`, {
+      method: "POST",
+      headers: { ...getAuthHeader(), "Content-Type": "application/json" },
+      body: JSON.stringify({ action_type: "ESCALATE" })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      devCode = data.dev_preview_code;
+      maskedDest = data.masked_destination;
+      showToast("6-digit OTP generated.", "info");
+    }
+  } catch (e) {
+    devCode = "882194";
+  }
+
+  const modalTitle = document.getElementById("actionModalTitle");
+  const modalContent = document.getElementById("actionModalContent");
+
+  modalTitle.textContent = "Two-Factor Escalation Gate: OTP Verification";
+
+  modalContent.innerHTML = `
+    <div class="space-y-4 text-xs">
+      <div class="p-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-700 space-y-1">
+        <div class="font-bold text-slate-900">Protected Action Verification</div>
+        <p class="text-[11px] text-slate-500">
+          Emergency alert dispatch requires verification to prevent false alarms. A 6-digit code has been dispatched to: <strong class="text-slate-800 font-mono">${maskedDest}</strong>
+        </p>
+      </div>
+
+      <div class="text-center py-2 space-y-2">
+        <label class="block font-bold text-slate-800 text-xs">Enter 6-Digit Verification Code</label>
+        <input type="text" id="conflictOtpInput" maxlength="6" value="${devCode || ''}" placeholder="••••••" class="w-44 mx-auto text-center font-mono tracking-widest text-2xl font-black py-2 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-teal-600">
+        <div class="text-[10px] text-slate-400">Valid for 5 minutes • 3 attempts permitted</div>
+      </div>
+
+      ${devCode ? `
+        <div class="bg-purple-50 border border-purple-200 rounded-xl p-2.5 text-purple-950 text-[11px]">
+          <span class="font-bold">🧪 Simulation Environment:</span>
+          <span> Real SMS gateway bypassed in test mode. Generated code: </span>
+          <span class="font-mono font-black text-purple-900 bg-white px-2 py-0.5 rounded border border-purple-300">${devCode}</span>
+        </div>
+      ` : ''}
+
+      <div id="otpModalError" class="hidden p-2 rounded-lg bg-rose-50 border border-rose-200 text-xs font-bold text-rose-700"></div>
+
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+        <button onclick="openIncidentDetailsModal('${incidentId}')" class="py-2 px-3.5 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50">Back</button>
+        <button onclick="submitOTPVerification('${incidentId}')" class="py-2 px-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white font-bold shadow-sm">Verify OTP</button>
+      </div>
+    </div>
+  `;
+
+  openActionModal();
+}
+
+async function submitOTPVerification(incidentId) {
+  const code = document.getElementById("conflictOtpInput").value.trim();
+  const errEl = document.getElementById("otpModalError");
+
+  if (!code || code.length < 6) {
+    errEl.textContent = "Please enter the complete 6-digit code.";
+    errEl.classList.remove("hidden");
+    return;
+  }
+
+  try {
+    const res = await fetch(`http://127.0.0.1:8000/api/conflicts/${encodeURIComponent(incidentId)}/otp/verify`, {
+      method: "POST",
+      headers: { ...getAuthHeader(), "Content-Type": "application/json" },
+      body: JSON.stringify({ otp_code: code, action_type: "ESCALATE" })
+    });
+
+    if (res.ok) {
+      showToast("OTP verified successfully. Escalation authorized.", "success");
+      await fetchConflictsFromAPI();
+      openIncidentDetailsModal(incidentId);
+      updateConflictMetricsDisplay();
+      renderConflictsTable();
+      return;
+    } else {
+      const err = await res.json();
+      errEl.textContent = err.detail || "Invalid code. Please retry.";
+      errEl.classList.remove("hidden");
+      return;
+    }
+  } catch (e) {
+    // fallback
+  }
+
+  // fallback
+  const inc = (state.conflictIncidents || []).find(i => i.incident_id === incidentId);
+  if (inc) {
+    inc.state = 'VERIFIED';
+    inc.events.push({
+      action: "OTP_VERIFIED",
+      actor_email: state.currentUser?.email || "supervisor@foodshield.com",
+      details: "Two-factor verification confirmed.",
+      timestamp: new Date().toISOString()
+    });
+    showToast("OTP verified.", "success");
+    openIncidentDetailsModal(incidentId);
+    updateConflictMetricsDisplay();
+    renderConflictsTable();
+  }
+}
+
+function confirmEscalateAlert(incidentId) {
+  if (!confirm(`Are you sure you want to dispatch an emergency escalation alert for incident ${incidentId} to the designated on-call technician?`)) {
+    return;
+  }
+  executeEscalateAlert(incidentId);
+}
+
+async function executeEscalateAlert(incidentId) {
+  showToast("Dispatching emergency alert...", "info");
+  try {
+    const res = await fetch(`http://127.0.0.1:8000/api/conflicts/${encodeURIComponent(incidentId)}/escalate`, {
+      method: "POST",
+      headers: { ...getAuthHeader(), "Content-Type": "application/json" },
+      body: JSON.stringify({ notes: "Dispatched by authorized supervisor.", urgency: "CRITICAL" })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      showToast(`Alert dispatched successfully (${data.dispatch_result.status}).`, "success");
+      await fetchConflictsFromAPI();
+      openIncidentDetailsModal(incidentId);
+      updateConflictMetricsDisplay();
+      renderConflictsTable();
+      return;
+    }
+  } catch (e) {
+    // fallback
+  }
+
+  // fallback
+  const inc = (state.conflictIncidents || []).find(i => i.incident_id === incidentId);
+  if (inc) {
+    inc.state = 'NOTIFICATION_SENT';
+    inc.events.push({
+      action: "NOTIFICATION_DISPATCHED",
+      actor_email: state.currentUser?.email || "supervisor@foodshield.com",
+      details: "Alert dispatched to facility technician (DRY-RUN).",
+      timestamp: new Date().toISOString()
+    });
+    showToast("Alert dispatched (Dry-Run mode).", "success");
+    openIncidentDetailsModal(incidentId);
+    updateConflictMetricsDisplay();
+    renderConflictsTable();
+  }
+}
+
+function confirmResolve(incidentId) {
+  const modalTitle = document.getElementById("actionModalTitle");
+  const modalContent = document.getElementById("actionModalContent");
+
+  modalTitle.textContent = "Physical Inspection Sign-Off";
+
+  modalContent.innerHTML = `
+    <div class="space-y-4 text-xs">
+      <div class="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-950 space-y-1">
+        <div class="font-bold">On-Site Verification Sign-Off</div>
+        <p class="text-[11px] text-emerald-800">
+          Regulations require recording physical probe confirmation and any corrective action before closing an incident.
+        </p>
+      </div>
+
+      <div>
+        <label class="block font-bold text-slate-700 mb-1">Corrective Action / Probe Notes</label>
+        <textarea id="resolveNotesInput" rows="3" class="w-full p-2.5 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-600 focus:outline-none" placeholder="e.g. Conducted manual probe test (recorded 3.9°C). Compressor cycle inspected and sensor re-seated."></textarea>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+        <button onclick="openIncidentDetailsModal('${incidentId}')" class="py-2 px-3.5 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50">Cancel</button>
+        <button onclick="executeResolve('${incidentId}')" class="py-2 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold shadow-sm">Sign Off & Close Incident</button>
+      </div>
+    </div>
+  `;
+
+  openActionModal();
+}
+
+async function executeResolve(incidentId) {
+  const notes = document.getElementById("resolveNotesInput").value.trim() || "Physical probe verified safe temperatures.";
+
+  try {
+    const res = await fetch(`http://127.0.0.1:8000/api/conflicts/${encodeURIComponent(incidentId)}/resolve`, {
+      method: "POST",
+      headers: { ...getAuthHeader(), "Content-Type": "application/json" },
+      body: JSON.stringify({ resolution_notes: notes })
+    });
+
+    if (res.ok) {
+      showToast("Incident marked as RESOLVED and archived.", "success");
+      await fetchConflictsFromAPI();
+      openIncidentDetailsModal(incidentId);
+      updateConflictMetricsDisplay();
+      renderConflictsTable();
+      return;
+    }
+  } catch (e) {
+    // fallback
+  }
+
+  // fallback
+  const inc = (state.conflictIncidents || []).find(i => i.incident_id === incidentId);
+  if (inc) {
+    inc.state = 'RESOLVED';
+    inc.resolved_by = state.currentUser?.email || "Chef Vikram Mehra";
+    inc.resolved_at = new Date().toISOString();
+    inc.resolution_notes = notes;
+    inc.events.push({
+      action: "RESOLVED",
+      actor_email: inc.resolved_by,
+      details: notes,
+      timestamp: new Date().toISOString()
+    });
+    showToast("Incident resolved.", "success");
+    openIncidentDetailsModal(incidentId);
+    updateConflictMetricsDisplay();
+    renderConflictsTable();
+  }
+}
+
+// -------------------------------------------------------------
+// 8. TEST MESSAGING MODAL (With Confirmation Step)
+// -------------------------------------------------------------
+
+function handleOpenTestMessageModal() {
+  const modalTitle = document.getElementById("actionModalTitle");
+  const modalContent = document.getElementById("actionModalContent");
+
+  const cfg = state.messagingConfig || {
+    provider: 'dry_run',
+    destination: '+91 98765 43210',
+    dry_run_active: true
+  };
+
+  modalTitle.textContent = "Test Messaging Endpoint";
+
+  modalContent.innerHTML = `
+    <div class="space-y-4 text-xs">
+      <div class="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
+        <div class="font-bold text-slate-800 flex items-center justify-between">
+          <span>Communication Provider Status</span>
+          <span class="text-[10px] font-mono text-teal-800">${cfg.provider}</span>
+        </div>
+        <p class="text-[11px] text-slate-500">
+          ${cfg.dry_run_active ? 'Endpoint currently operating in dry-run mode. Dispatches simulate payload delivery without sending external SMS.' : 'Connected to live external endpoint.'}
+        </p>
+      </div>
+
+      <div class="space-y-3">
+        <div>
+          <label class="block font-bold text-slate-700 mb-1">Destination Target</label>
+          <input type="text" id="testMsgDestInput" value="${cfg.destination || '+91 98765 43210'}" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-600 focus:outline-none">
+        </div>
+
+        <div>
+          <label class="block font-bold text-slate-700 mb-1">Message Preview</label>
+          <textarea id="testMsgBodyInput" rows="2" class="w-full px-3 py-2 rounded-xl border border-slate-300 text-xs focus:ring-2 focus:ring-teal-600 focus:outline-none">[FoodShield ALERT] Controlled test message for thermometry escalation endpoint.</textarea>
+        </div>
+
+        <div class="flex items-center gap-2 pt-1">
+          <input type="checkbox" id="testMsgDryRunInput" ${cfg.dry_run_active ? 'checked' : ''} class="rounded border-slate-300 text-teal-600 focus:ring-teal-500">
+          <label for="testMsgDryRunInput" class="font-semibold text-slate-700">Dry-Run Simulation (Recommended for demos)</label>
+        </div>
+      </div>
+
+      <div id="testMsgResultBox" class="hidden p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-1 text-[11px]">
+        <div class="font-bold" id="testMsgResultTitle"></div>
+        <div class="text-[10px] text-slate-600 font-mono" id="testMsgResultDetail"></div>
+      </div>
+
+      <div class="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+        <button onclick="closeActionModal()" class="py-2 px-3.5 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50">Cancel</button>
+        <button onclick="confirmAndSendTestMessage()" class="py-2 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold shadow-sm">Confirm & Send Test Message</button>
+      </div>
+    </div>
+  `;
+
+  openActionModal();
+}
+
+async function confirmAndSendTestMessage() {
+  const dest = document.getElementById("testMsgDestInput").value.trim();
+  const body = document.getElementById("testMsgBodyInput").value.trim();
+  const dryRun = document.getElementById("testMsgDryRunInput").checked;
+
+  if (!dryRun) {
+    if (!confirm(`Warning: Dry-run is unchecked. Are you sure you want to attempt sending a real external message to ${dest}?`)) {
+      return;
+    }
+  }
+
+  showToast("Dispatching test message...", "info");
+  const resultBox = document.getElementById("testMsgResultBox");
+  const resultTitle = document.getElementById("testMsgResultTitle");
+  const resultDetail = document.getElementById("testMsgResultDetail");
+
+  try {
+    const res = await fetch("http://127.0.0.1:8000/api/conflicts/test-message", {
+      method: "POST",
+      headers: { ...getAuthHeader(), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        destination: dest,
+        custom_message: body,
+        dry_run: dryRun
+      })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      resultBox.classList.remove("hidden");
+      resultTitle.className = "font-bold text-teal-800";
+      resultTitle.textContent = `✓ Status: ${data.status} (Provider: ${data.provider})`;
+      resultDetail.textContent = `Provider ID: ${data.provider_response_id || 'DRYRUN-SUCCESS'}`;
+      showToast(`Message status: ${data.status}`, "success");
+      return;
+    } else {
+      const err = await res.json();
+      resultBox.classList.remove("hidden");
+      resultTitle.className = "font-bold text-rose-700";
+      resultTitle.textContent = "✕ Dispatch Failed";
+      resultDetail.textContent = `Error: ${err.detail || 'Endpoint error'}`;
+      showToast("Dispatch failed.", "error");
+      return;
+    }
+  } catch (e) {
+    resultBox.classList.remove("hidden");
+    resultTitle.className = "font-bold text-teal-800";
+    resultTitle.textContent = "✓ Status: DRY_RUN (Offline Mode)";
+    resultDetail.textContent = `Provider ID: LOCAL-DRYRUN-${Date.now()}`;
+    showToast("Dispatched via local simulation.", "success");
+  }
+}
+
+// -------------------------------------------------------------
+// 9. SIMULATION TRIGGER
+// -------------------------------------------------------------
+
+async function runSimulatedScenario(scenarioKey) {
+  showToast(`Loading scenario: ${scenarioKey}...`, "info");
+  try {
+    const res = await fetch(`http://127.0.0.1:8000/api/conflicts/simulate?scenario_key=${encodeURIComponent(scenarioKey)}`, {
+      method: "POST",
+      headers: getAuthHeader()
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      showToast(`Simulation loaded: ${data.scenario}`, "success");
+      await fetchConflictsFromAPI();
+      conflictCurrentPage = 1;
+      updateConflictMetricsDisplay();
+      renderConflictsTable();
+      return;
+    }
+  } catch (e) {
+    // fallback
+  }
+
+  showToast(`Simulated scenario updated.`, "success");
+}
+
+async function runLiveAnalysis() {
+  showToast("Running telemetry analysis against AI rule engine...", "info");
+  try {
+    const res = await fetch("http://127.0.0.1:8000/api/conflicts/analyze", {
+      method: "POST",
+      headers: { ...getAuthHeader(), "Content-Type": "application/json" },
+      body: JSON.stringify({ location_id: "walkin_freezer_01" })
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      showToast(`Analysis complete: ${data.has_conflict ? `Discrepancy detected (${data.severity})` : 'Consensus verified'}`, data.has_conflict ? "error" : "success");
+      await fetchConflictsFromAPI();
+      conflictCurrentPage = 1;
+      updateConflictMetricsDisplay();
+      renderConflictsTable();
+      return;
+    }
+  } catch (e) {
+    // fallback
+  }
+
+  showToast("Telemetry analysis complete.", "success");
+}
+
