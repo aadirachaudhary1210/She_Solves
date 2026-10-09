@@ -49,7 +49,7 @@ class MenuDishCreate(BaseModel):
     selling_price: float
     allergens: Optional[str] = None
     image_url: Optional[str] = None
-    ingredients: List[IngredientCreate] = []
+    ingredients: List[IngredientCreate] = Field(default_factory=list)
 
 class TraceabilityNode(BaseModel):
     dish: str
@@ -164,7 +164,7 @@ class InspectionCreate(BaseModel):
     status: str = "passed"
     findings: str
     remarks: Optional[str] = None
-    violations: List[ViolationCreate] = []
+    violations: List[ViolationCreate] = Field(default_factory=list)
 
 class CorrectiveActionCreate(BaseModel):
     restaurant_id: int

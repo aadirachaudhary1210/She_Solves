@@ -1,0 +1,7 @@
+
+# Local development files
+backend/foodshield.db
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+.venv/

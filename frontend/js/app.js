@@ -416,7 +416,8 @@ document.addEventListener("DOMContentLoaded", () => {
   
   // Check if session stored or default to logged out
   const savedUser = sessionStorage.getItem("foodshield_user");
-  if (savedUser) {
+  const savedToken = sessionStorage.getItem("foodshield_token");
+  if (savedUser && savedToken) {
     try {
       state.currentUser = JSON.parse(savedUser);
       state.activeRole = state.currentUser.role;
@@ -425,6 +426,8 @@ document.addEventListener("DOMContentLoaded", () => {
       showAuthView();
     }
   } else {
+    sessionStorage.removeItem("foodshield_user");
+    sessionStorage.removeItem("foodshield_token");
     showAuthView();
   }
 });
@@ -471,50 +474,56 @@ function fillDemoAccount(role) {
   showToast(`Loaded ${role === 'restaurant' ? 'Restaurant' : 'Government Officer'} credentials`, 'info');
 }
 
-function handleLoginSubmit(e) {
+async function handleLoginSubmit(e) {
   e.preventDefault();
   const email = document.getElementById("loginEmail").value.trim();
   const password = document.getElementById("loginPassword").value;
   const errorEl = document.getElementById("loginErrorMsg");
   const submitBtn = document.getElementById("loginSubmitBtn");
 
+  errorEl.classList.add("hidden");
   submitBtn.disabled = true;
   submitBtn.innerHTML = `
     <svg class="animate-spin -ml-1 mr-2 h-4 w-4 text-white" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-    Authenticating Secure Session...
+    Connecting to FoodShield...
   `;
 
-  setTimeout(() => {
-    // Validate credentials safely without disclosing username existence
-    if (state.activeRole === 'restaurant' && email === 'restaurant@foodshield.com' && password === 'Password123!') {
-      state.currentUser = {
-        email: email,
-        name: "Chef Vikram Mehra",
-        role: "restaurant",
-        title: "The Royal Spice Kitchen"
-      };
-      sessionStorage.setItem("foodshield_user", JSON.stringify(state.currentUser));
-      logAuditEvent("LOGIN_SUCCESS", "User authenticated into Restaurant Portal");
-      showAppShell();
-      showToast("Welcome to FoodShield Restaurant Portal", "success");
-    } else if (state.activeRole === 'officer' && email === 'officer@foodshield.gov' && password === 'OfficerSecure2026!') {
-      state.currentUser = {
-        email: email,
-        name: "Inspector Rajesh Sharma",
-        role: "officer",
-        title: "Senior Food Safety Officer (FSO-DL-4029)"
-      };
-      sessionStorage.setItem("foodshield_user", JSON.stringify(state.currentUser));
-      logAuditEvent("LOGIN_SUCCESS", "Government Officer authenticated with Badge FSO-DL-4029");
-      showAppShell();
-      showToast("Authorized Access: Government Food-Safety Grid", "success");
-    } else {
-      errorEl.textContent = "Invalid official credentials or incorrect portal identity selected.";
-      errorEl.classList.remove("hidden");
-      submitBtn.disabled = false;
-      submitBtn.innerHTML = `<span>Authorize & Launch Portal</span>`;
+  try {
+    const response = await fetch("http://127.0.0.1:8000/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      body: JSON.stringify({ email, password, role: state.activeRole })
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || `Login failed (${response.status})`);
     }
-  }, 400);
+    if (!payload.access_token) throw new Error("Backend login succeeded but no access token was returned.");
+
+    sessionStorage.setItem("foodshield_token", payload.access_token);
+    state.currentUser = {
+      email,
+      name: payload.full_name || (state.activeRole === "restaurant" ? "Chef Vikram Mehra" : "Inspector Rajesh Sharma"),
+      role: payload.role || state.activeRole,
+      title: state.activeRole === "restaurant" ? "The Royal Spice Kitchen" : "Senior Food Safety Officer",
+      user_id: payload.user_id,
+      restaurant_id: payload.restaurant_id ?? null,
+      officer_id: payload.officer_id ?? null
+    };
+    sessionStorage.setItem("foodshield_user", JSON.stringify(state.currentUser));
+    logAuditEvent("LOGIN_SUCCESS", `User authenticated into ${state.currentUser.role} portal via backend`);
+    showAppShell();
+    showToast(state.currentUser.role === "restaurant" ? "Welcome to FoodShield Restaurant Portal" : "Authorized Access: Government Food-Safety Grid", "success");
+  } catch (error) {
+    console.error("FoodShield login failed:", error);
+    errorEl.textContent = error.message.includes("Failed to fetch")
+      ? "Cannot reach the backend. Make sure the backend is running at http://127.0.0.1:8000."
+      : error.message;
+    errorEl.classList.remove("hidden");
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.innerHTML = `<span>Authorize & Launch Portal</span>`;
+  }
 }
 
 function handleLogout() {
@@ -522,6 +531,7 @@ function handleLogout() {
   state.currentUser = null;
   state.isProtectedUnlocked = false;
   sessionStorage.removeItem("foodshield_user");
+  sessionStorage.removeItem("foodshield_token");
   showAuthView();
   showToast("Session terminated safely", "info");
 }
@@ -558,23 +568,15 @@ function showAppShell() {
 }
 
 function togglePortalMode() {
-  if (state.currentUser.role === 'restaurant') {
-    state.currentUser.role = 'officer';
-    state.currentUser.name = "Inspector Rajesh Sharma";
-    state.currentUser.email = "officer@foodshield.gov";
-    state.activeRole = 'officer';
-    showToast("Switched to Government Food Safety Officer Portal", "info");
-    showAppShell();
-  } else {
-    state.currentUser.role = 'restaurant';
-    state.currentUser.name = "Chef Vikram Mehra";
-    state.currentUser.email = "restaurant@foodshield.com";
-    state.activeRole = 'restaurant';
-    showToast("Switched to Restaurant Compliance Portal", "info");
-    showAppShell();
-  }
+  const targetRole = state.currentUser?.role === "restaurant" ? "officer" : "restaurant";
+  // Backend tokens are role-bound. Do not change the UI role without authenticating again.
+  sessionStorage.removeItem("foodshield_user");
+  sessionStorage.removeItem("foodshield_token");
+  state.currentUser = null;
+  state.activeRole = targetRole;
+  showAuthView();
+  showToast(`Please sign in to the ${targetRole === "officer" ? "Government Officer" : "Restaurant"} portal.`, "info");
 }
-
 // -------------------------------------------------------------
 // NAVIGATION & ACCESS CONTROL
 // -------------------------------------------------------------
@@ -593,8 +595,10 @@ function renderNavigation() {
     { id: 'staff', label: 'Staff Management', icon: '👥', isProtected: true },
     { id: 'documents', label: 'Compliance Documents', icon: '📑', isProtected: true },
     { id: 'corrective', label: 'Corrective Actions', icon: '⚡', isProtected: false, badge: '1' },
+    { id: 'risk_radar', label: 'Smart Risk Radar', icon: '🎯', isProtected: false },
     { id: 'audit', label: 'Audit Trail Logs', icon: '📜', isProtected: false }
   ];
+
 
   const officerLinks = [
     { id: 'officer_dashboard', label: 'Officer Overview', icon: '🏛️', isProtected: false },
@@ -602,8 +606,10 @@ function renderNavigation() {
     { id: 'officer_evidence', label: 'Evidence Review Queue', icon: '🔍', isProtected: false, badge: '1' },
     { id: 'officer_inspections', label: 'Inspections & Audits', icon: '📝', isProtected: false },
     { id: 'officer_corrective', label: 'Corrective Directives', icon: '⚖️', isProtected: false },
+    { id: 'risk_radar', label: 'Smart Risk Radar', icon: '🎯', isProtected: false },
     { id: 'audit', label: 'Central Audit Logs', icon: '📜', isProtected: false }
   ];
+
 
   const links = role === 'restaurant' ? restaurantLinks : officerLinks;
 
@@ -701,6 +707,10 @@ function navigateTo(tabId) {
     case 'officer_corrective':
       titleEl.textContent = "Regulatory Directives & Corrective Action Review";
       renderOfficerCorrectiveActions(contentEl);
+      break;
+    case 'risk_radar':
+      titleEl.textContent = "AnnaKavach Smart Risk Radar — Food Safety Intelligence Center";
+      renderRiskRadar(contentEl);
       break;
     default:
       contentEl.innerHTML = `<div class="p-6 text-slate-500">Module under development.</div>`;

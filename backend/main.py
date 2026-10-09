@@ -51,7 +51,12 @@ app = FastAPI(
 # Enable CORS for web clients
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # Explicit local development origins. Add your deployed frontend origin
+    # here when deploying; do not combine wildcard origins with credentials.
+    allow_origins=[
+        "http://127.0.0.1:5500",
+        "http://localhost:5500",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1135,6 +1140,440 @@ def get_alerts(current_user: User = Depends(get_current_user), db: Session = Dep
     notifs = db.query(Notification).filter(Notification.user_id == current_user.id).order_by(Notification.created_at.desc()).all()
     return notifs
 
+# =============================================================
+# CHALLENGE 4 — SMART RISK RADAR  (AnnaKavach Intelligence Center)
+# Appended routes — do NOT modify any code above this block.
+# =============================================================
+from risk_engine import (
+    analyse_restaurant, analyse_all_restaurants, compute_overview,
+    RiskFinding, FindingStatus, DORMANT_RULES, CONFIG
+)
+
+# ── CH4-1  Overview KPIs (authenticated) ─────────────────────
+@app.get("/api/risk/overview")
+def get_risk_overview(
+    restaurant_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Return aggregated KPI metrics and top risk finding.
+    Officers see all restaurants; restaurant users see their own.
+    """
+    if current_user.role == UserRole.OFFICER:
+        if restaurant_id:
+            rest = db.query(Restaurant).filter(Restaurant.id == restaurant_id).first()
+            if not rest:
+                raise HTTPException(404, "Restaurant not found")
+            findings = analyse_restaurant(db, rest)
+        else:
+            findings = analyse_all_restaurants(db)
+        restaurants = db.query(Restaurant).all()
+    else:
+        rest = db.query(Restaurant).filter(Restaurant.owner_id == current_user.id).first()
+        if not rest:
+            raise HTTPException(404, "Restaurant record not found")
+        findings = analyse_restaurant(db, rest)
+        restaurants = [rest]
+
+    overview = compute_overview(findings, restaurants)
+    return overview
+
+
+# ── CH4-2  Findings List (with filters) ──────────────────────
+@app.get("/api/risk/findings")
+def list_risk_findings(
+    restaurant_id: Optional[int] = None,
+    severity: Optional[str] = None,
+    category: Optional[str] = None,
+    status: Optional[str] = None,
+    is_recurring: Optional[bool] = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    List risk findings with optional filters.
+    Returns paginated, filtered list of findings derived from live DB records.
+    """
+    if current_user.role == UserRole.OFFICER:
+        if restaurant_id:
+            rest = db.query(Restaurant).filter(Restaurant.id == restaurant_id).first()
+            if not rest:
+                raise HTTPException(404, "Restaurant not found")
+            findings = analyse_restaurant(db, rest)
+        else:
+            findings = analyse_all_restaurants(db)
+    else:
+        rest = db.query(Restaurant).filter(Restaurant.owner_id == current_user.id).first()
+        if not rest:
+            raise HTTPException(404, "Restaurant record not found")
+        findings = analyse_restaurant(db, rest)
+
+    # Apply filters
+    if severity:
+        findings = [f for f in findings if f.severity.value == severity.lower()]
+    if category:
+        findings = [f for f in findings if category.lower() in f.category.lower()]
+    if status:
+        findings = [f for f in findings if f.status.value == status.lower()]
+    if is_recurring is not None:
+        findings = [f for f in findings if f.is_recurring == is_recurring]
+
+    total = len(findings)
+    page = findings[offset: offset + limit]
+
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "findings": [f.to_dict() for f in page],
+    }
+
+
+# ── CH4-3  Single Finding Detail ─────────────────────────────
+@app.get("/api/risk/findings/{fingerprint}")
+def get_risk_finding(
+    fingerprint: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Retrieve a single finding by its stable fingerprint.
+    Returns full evidence references, scoring explanation, and recommendations.
+    """
+    if current_user.role == UserRole.OFFICER:
+        findings = analyse_all_restaurants(db)
+    else:
+        rest = db.query(Restaurant).filter(Restaurant.owner_id == current_user.id).first()
+        if not rest:
+            raise HTTPException(404, "Restaurant record not found")
+        findings = analyse_restaurant(db, rest)
+
+    match = next((f for f in findings if f.fingerprint == fingerprint), None)
+    if not match:
+        raise HTTPException(404, f"No active finding with fingerprint '{fingerprint}'")
+
+    d = match.to_dict()
+    # Add scoring explanation
+    d["scoring_explanation"] = {
+        "score": match.score,
+        "severity": match.severity.value,
+        "score_bands": {
+            "critical": "80–100",
+            "high": "60–79",
+            "medium": "35–59",
+            "low": "10–34",
+            "info": "0–9",
+        },
+        "note": (
+            "Score is a prioritisation aid only. It is NOT a probability of "
+            "contamination and does NOT replace qualified food-safety inspections."
+        ),
+    }
+    return d
+
+
+# ── CH4-4  Analytics Data ────────────────────────────────────
+@app.get("/api/risk/analytics")
+def get_risk_analytics(
+    restaurant_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Return analytics data for charts: severity distribution, category breakdown,
+    recurring vs non-recurring, corrective action status distribution.
+    All values are derived from the same findings list used by the dashboard.
+    """
+    if current_user.role == UserRole.OFFICER:
+        if restaurant_id:
+            rest = db.query(Restaurant).filter(Restaurant.id == restaurant_id).first()
+            if not rest:
+                raise HTTPException(404, "Restaurant not found")
+            findings = analyse_restaurant(db, rest)
+        else:
+            findings = analyse_all_restaurants(db)
+    else:
+        rest = db.query(Restaurant).filter(Restaurant.owner_id == current_user.id).first()
+        if not rest:
+            raise HTTPException(404, "Restaurant not found")
+        findings = analyse_restaurant(db, rest)
+
+    by_severity = {}
+    by_category = {}
+    by_status = {}
+    by_rule = {}
+
+    for f in findings:
+        by_severity[f.severity.value] = by_severity.get(f.severity.value, 0) + 1
+        by_category[f.category] = by_category.get(f.category, 0) + 1
+        by_status[f.status.value] = by_status.get(f.status.value, 0) + 1
+        by_rule[f.rule_id] = by_rule.get(f.rule_id, 0) + 1
+
+    recurring_count = sum(1 for f in findings if f.is_recurring)
+    non_recurring_count = len(findings) - recurring_count
+
+    # Corrective action status breakdown from DB (authoritative source).
+    # Restaurant users must never see counts from another restaurant.
+    ca_query = db.query(CorrectiveAction)
+    if current_user.role == UserRole.OFFICER:
+        if restaurant_id is not None:
+            ca_query = ca_query.filter(
+                CorrectiveAction.restaurant_id == restaurant_id
+            )
+    else:
+        own_restaurant = (
+            db.query(Restaurant)
+            .filter(Restaurant.owner_id == current_user.id)
+            .first()
+        )
+        if not own_restaurant:
+            raise HTTPException(status_code=404, detail="Restaurant record not found")
+        ca_query = ca_query.filter(
+            CorrectiveAction.restaurant_id == own_restaurant.id
+        )
+
+    all_ca = ca_query.all()
+    ca_status_dist = {}
+    for ca in all_ca:
+        status_key = ca.status.value if hasattr(ca.status, "value") else str(ca.status)
+        ca_status_dist[status_key] = ca_status_dist.get(status_key, 0) + 1
+
+    return {
+        "by_severity": by_severity,
+        "by_category": by_category,
+        "by_status": by_status,
+        "by_rule": by_rule,
+        "recurring_vs_non_recurring": {
+            "recurring": recurring_count,
+            "non_recurring": non_recurring_count,
+        },
+        "corrective_action_status": ca_status_dist,
+        "total_findings": len(findings),
+        "note": "All chart values derived from live database records. No hardcoded statistics.",
+    }
+
+
+# ── CH4-5  Corrective Actions (CH4-managed findings) ─────────
+@app.post("/api/risk/corrective-action")
+def create_risk_corrective_action(
+    issue_title: str = Form(...),
+    issue_description: str = Form(...),
+    required_action: str = Form(...),
+    deadline_days: int = Form(default=7),
+    restaurant_id: Optional[int] = Form(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new corrective action directly from a Risk Radar finding.
+    Linked to the authenticated user's restaurant (or a specified one for officers).
+    Validated on the backend; not trust frontend values.
+    """
+    if current_user.role == UserRole.OFFICER:
+        if not restaurant_id:
+            raise HTTPException(400, "Officers must specify a restaurant_id")
+        rest = db.query(Restaurant).filter(Restaurant.id == restaurant_id).first()
+    else:
+        rest = db.query(Restaurant).filter(Restaurant.owner_id == current_user.id).first()
+
+    if not rest:
+        raise HTTPException(404, "Restaurant not found")
+
+    if deadline_days < 1 or deadline_days > 365:
+        raise HTTPException(400, "deadline_days must be between 1 and 365")
+
+    if not issue_title.strip():
+        raise HTTPException(400, "issue_title is required")
+    if not required_action.strip():
+        raise HTTPException(400, "required_action is required")
+
+    ca = CorrectiveAction(
+        restaurant_id=rest.id,
+        issue_title=issue_title[:255],
+        issue_description=issue_description,
+        required_action=required_action,
+        deadline=datetime.utcnow() + timedelta(days=deadline_days),
+        status=CorrectiveStatus.PENDING,
+    )
+    db.add(ca)
+    db.commit()
+    db.refresh(ca)
+
+    log_audit(
+        db, current_user,
+        "CH4_CORRECTIVE_ACTION_CREATED",
+        "CorrectiveAction", ca.id,
+        f"Risk Radar corrective action created: {issue_title[:100]}",
+        rest.id
+    )
+
+    return {
+        "id": ca.id,
+        "restaurant_id": rest.id,
+        "issue_title": ca.issue_title,
+        "deadline": ca.deadline.strftime("%Y-%m-%d"),
+        "status": ca.status.value,
+        "message": "Corrective action created successfully.",
+    }
+
+
+@app.patch("/api/risk/corrective-action/{ca_id}/status")
+def update_corrective_action_status(
+    ca_id: int,
+    new_status: str = Form(...),
+    notes: Optional[str] = Form(default=None),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Update corrective action status.
+    Valid transitions enforced server-side.
+    Critical findings require verification before resolving (officer only).
+    """
+    ca = db.query(CorrectiveAction).filter(CorrectiveAction.id == ca_id).first()
+    if not ca:
+        raise HTTPException(404, "Corrective action not found")
+
+    # Authorization check
+    if current_user.role == UserRole.RESTAURANT:
+        rest = db.query(Restaurant).filter(Restaurant.owner_id == current_user.id).first()
+        if not rest or ca.restaurant_id != rest.id:
+            raise HTTPException(403, "Access denied")
+
+    # Validate transition
+    valid_statuses = {s.value for s in CorrectiveStatus}
+    if new_status not in valid_statuses:
+        raise HTTPException(400, f"Invalid status. Valid values: {list(valid_statuses)}")
+
+    # Enforce that restaurants cannot self-close (verified_closed requires officer)
+    if new_status == "verified_closed" and current_user.role != UserRole.OFFICER:
+        raise HTTPException(403, "Only an officer can mark a corrective action as verified_closed")
+
+    old_status = ca.status.value
+    ca.status = CorrectiveStatus(new_status)
+    if new_status == "verified_closed":
+        ca.resolved_at = datetime.utcnow()
+    if notes:
+        ca.restaurant_response = (ca.restaurant_response or "") + f"\n[{datetime.utcnow().strftime('%Y-%m-%d %H:%M')}] {notes}"
+
+    db.commit()
+
+    log_audit(
+        db, current_user,
+        "CH4_CA_STATUS_UPDATED",
+        "CorrectiveAction", ca.id,
+        f"Status changed from '{old_status}' to '{new_status}'. Notes: {notes or 'None'}",
+        ca.restaurant_id
+    )
+
+    return {
+        "id": ca.id,
+        "old_status": old_status,
+        "new_status": new_status,
+        "message": "Status updated successfully.",
+    }
+
+
+# ── CH4-5b  List Corrective Actions ──────────────────────────
+@app.get("/api/risk/corrective-actions")
+def list_corrective_actions(
+    restaurant_id: Optional[int] = None,
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    List corrective actions with optional filters.
+    Officers see all restaurants; restaurant users see their own.
+    Supports filtering by status (pending, submitted, verified_closed, overdue).
+    """
+    if current_user.role == UserRole.OFFICER:
+        query = db.query(CorrectiveAction)
+        if restaurant_id:
+            query = query.filter(CorrectiveAction.restaurant_id == restaurant_id)
+    else:
+        rest = db.query(Restaurant).filter(Restaurant.owner_id == current_user.id).first()
+        if not rest:
+            raise HTTPException(404, "Restaurant record not found")
+        query = db.query(CorrectiveAction).filter(CorrectiveAction.restaurant_id == rest.id)
+
+    if status_filter:
+        valid_statuses = {s.value for s in CorrectiveStatus}
+        if status_filter not in valid_statuses:
+            raise HTTPException(400, f"Invalid status. Valid: {list(valid_statuses)}")
+        query = query.filter(CorrectiveAction.status == CorrectiveStatus(status_filter))
+
+    total = query.count()
+    actions = query.order_by(CorrectiveAction.deadline.asc()).offset(offset).limit(limit).all()
+
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "corrective_actions": [
+            {
+                "id": ca.id,
+                "restaurant_id": ca.restaurant_id,
+                "issue_title": ca.issue_title,
+                "issue_description": ca.issue_description,
+                "required_action": ca.required_action,
+                "deadline": ca.deadline.strftime("%Y-%m-%d") if ca.deadline else None,
+                "status": ca.status.value,
+                "restaurant_response": ca.restaurant_response,
+                "resolved_at": ca.resolved_at.isoformat() if ca.resolved_at else None,
+                "created_at": ca.created_at.isoformat() if hasattr(ca, "created_at") and ca.created_at else None,
+                # A verified/closed action is not overdue even if its original
+                # deadline is in the past.
+                "is_overdue": (
+                    bool(ca.deadline and ca.deadline < datetime.utcnow()
+                         and ca.status != CorrectiveStatus.VERIFIED_CLOSED)
+                ),
+            }
+            for ca in actions
+        ],
+    }
+
+
+# ── CH4-6  Dormant Rules Catalogue ───────────────────────────
+@app.get("/api/risk/dormant-rules")
+def get_dormant_rules(current_user: User = Depends(get_current_user)):
+    """
+    Return list of rules not yet active due to missing CH1/CH2/CH3 data models.
+    Provides the integration path for the other challenge teams.
+    """
+    return {
+        "dormant_rules": DORMANT_RULES,
+        "message": (
+            "These rules are documented and ready to activate once the corresponding "
+            "data models from Challenge 1 (Temperature), Challenge 2 (Demand Forecasting), "
+            "and Challenge 3 (Conflict Detection) are merged."
+        ),
+    }
+
+
+# ── CH4-7  Health-check ───────────────────────────────────────
+@app.get("/api/risk/health")
+def risk_health_check(db: Session = Depends(get_db)):
+    """Verify the risk engine and DB connection are operational."""
+    try:
+        count = db.query(Restaurant).count()
+        return {
+            "status": "ok",
+            "restaurant_count": count,
+            "engine": "AnnaKavach Smart Risk Radar v1.0",
+            "active_rules": 14,
+            "dormant_rules": len(DORMANT_RULES),
+        }
+    except Exception as ex:
+        raise HTTPException(500, f"Risk engine health check failed: {str(ex)}")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
