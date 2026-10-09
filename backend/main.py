@@ -1,17 +1,13 @@
-"""
-FoodShield - Central FastAPI Application & REST API
-Full-stack production backend providing endpoints for restaurant compliance management,
-government food-safety inspections, automated evidence verification, and immutable audit logs.
-"""
 
 import os
 from datetime import datetime, timedelta
 from typing import List, Optional
+
 from fastapi import FastAPI, Depends, HTTPException, status, Header, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from database import engine, get_db, Base
+from database import engine, get_db, Base, SessionLocal
 from models import (
     User, UserRole, Restaurant, OfficerProfile, Brand, Supplier, MenuDish,
     Ingredient, StockItem, StockBatch, StockEvidence, CleaningArea, CleaningTask,
@@ -34,13 +30,21 @@ from auth import (
 from compliance_engine import calculate_restaurant_compliance
 from evidence_verifier import evidence_verifier
 from seed_data import seed_database
-
+import temperature_models
+from temperature_service import seed_temperature_storage_units
+import temperature_routes
 # Create DB tables and seed initial production demo data
 Base.metadata.create_all(bind=engine)
 try:
     seed_database()
 except Exception as e:
     print(f"Seed note: {e}")
+
+try:
+    with SessionLocal() as db_session:
+        seed_temperature_storage_units(db_session)
+except Exception as e:
+    print(f"TempGuard seed note: {e}")
 
 app = FastAPI(
     title="FoodShield API",
@@ -56,6 +60,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount FoodShield TempGuard Router (/api/temperature)
+app.include_router(temperature_routes.router)
 
 # Helper: Append-only Audit Logger
 def log_audit(db: Session, user: Optional[User], action: str, entity_type: str = None, entity_id: int = None, details: str = None, restaurant_id: int = None):

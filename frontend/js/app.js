@@ -586,6 +586,7 @@ function renderNavigation() {
 
   const restaurantLinks = [
     { id: 'dashboard', label: 'Dashboard & Scores', icon: '📊', isProtected: false },
+    { id: 'tempguard', label: 'Cold-Chain TempGuard', icon: '❄️', isProtected: false },
     { id: 'menu', label: 'Menu & Traceability', icon: '🍲', isProtected: false },
     { id: 'stock', label: 'Stock & Procurement', icon: '📦', isProtected: false },
     { id: 'hygiene', label: 'Hygiene & Cleaning', icon: '✨', isProtected: false },
@@ -599,6 +600,7 @@ function renderNavigation() {
   const officerLinks = [
     { id: 'officer_dashboard', label: 'Officer Overview', icon: '🏛️', isProtected: false },
     { id: 'officer_restaurants', label: 'Restaurants Directory', icon: '🏢', isProtected: false },
+    { id: 'tempguard', label: 'Cold-Chain Telemetry', icon: '❄️', isProtected: false },
     { id: 'officer_evidence', label: 'Evidence Review Queue', icon: '🔍', isProtected: false, badge: '1' },
     { id: 'officer_inspections', label: 'Inspections & Audits', icon: '📝', isProtected: false },
     { id: 'officer_corrective', label: 'Corrective Directives', icon: '⚖️', isProtected: false },
@@ -649,6 +651,10 @@ function navigateTo(tabId) {
     case 'dashboard':
       titleEl.textContent = "Restaurant Compliance Dashboard";
       renderRestaurantDashboard(contentEl);
+      break;
+    case 'tempguard':
+      titleEl.textContent = "FoodShield TempGuard — Temperature Monitoring";
+      renderTempGuardView(contentEl);
       break;
     case 'menu':
       titleEl.textContent = "Menu Catalog & Ingredient Traceability Provenance";
@@ -958,7 +964,30 @@ function renderRestaurantDashboard(container) {
         <button onclick="navigateTo('corrective')" class="py-2 px-3 rounded-xl bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold transition flex items-center gap-1.5">
           <span>⚡ Submit Action Evidence</span>
         </button>
+        <button onclick="navigateTo('tempguard')" class="py-2 px-3 rounded-xl bg-teal-800 hover:bg-teal-700 text-teal-200 text-xs font-semibold transition flex items-center gap-1.5 border border-teal-700">
+          <span>❄️ Cold-Chain TempGuard</span>
+        </button>
       </div>
+    </div>
+
+    <!-- FoodShield TempGuard Cold-Chain Status Banner -->
+    <div class="bg-white rounded-2xl p-4 text-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4 border border-slate-200 shadow-sm">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-teal-50 text-teal-700 flex items-center justify-center font-bold text-lg border border-teal-200">
+          ❄️
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="text-xs font-bold uppercase tracking-wider text-teal-800">FoodShield TempGuard</span>
+            <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">Normal</span>
+          </div>
+          <div class="text-xs text-slate-500 mt-0.5">5 Storage Units Monitored • Real-Time Drift Analysis & Statutory Excursion Tracking</div>
+        </div>
+      </div>
+      <button onclick="navigateTo('tempguard')" class="py-2 px-4 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm flex-shrink-0">
+        <span>Open TempGuard</span>
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/></svg>
+      </button>
     </div>
 
     <!-- Middle Section: Breakdown & Traceability Preview -->
